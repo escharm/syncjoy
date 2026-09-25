@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/protocol",
+    "crates/relay",
+    "crates/peer",
+    "examples/relay-host",
+    "examples/peer-demo",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+syncjoy-protocol = { path = "crates/protocol" }
+syncjoy-relay = { path = "crates/relay" }
+syncjoy-peer = { path = "crates/peer" }
+
+async-trait = "0.1"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+bytes = "1"
+clap = { version = "4", features = ["derive", "env"] }
+hmac = "0.12"
+ratatui = "0.29"
+tui-input = "0.11"
+sha1 = "0.10"
+webrtc = "0.17"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["macros", "sync"] }
+tokio-tungstenite = "0.24"
+web-sys = { version = "0.3", features = [
+  "WebSocket", "BinaryType", "RtcPeerConnection", "RtcConfiguration", "RtcDataChannel",
+  "RtcDataChannelState", "RtcDataChannelEvent", "RtcSessionDescription",
+  "RtcSessionDescriptionInit", "RtcSdpType", "RtcIceCandidate",
+  "RtcIceCandidateInit", "RtcPeerConnectionIceEvent", "MessageEvent", "Event",
+] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+gloo-timers = { version = "0.3", features = ["futures"] }
+tracing = "0.1"
+
+[profile.release]
+lto = "thin"

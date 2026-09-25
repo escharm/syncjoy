@@ -1,0 +1,17 @@
+[package]
+name = "peer-demo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+syncjoy-peer = { workspace = true }
+syncjoy-protocol = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+ratatui = { workspace = true }
+tui-input = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

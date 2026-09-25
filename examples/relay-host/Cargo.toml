@@ -1,0 +1,13 @@
+[package]
+name = "relay-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+syncjoy-relay = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "net"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+clap = { workspace = true }
+portable-pty = "0.8"
+
+[lints]
+workspace = true
