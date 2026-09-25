@@ -193,12 +193,19 @@ async fn on_close_fires_when_the_link_closes() {
     let peer_link: PeerLink = within_timeout(alice_relay_link.connect_peer("bob"))
         .await
         .expect("dial opens");
-    let (closed_tx, mut closed_rx) = unbounded_channel();
-    peer_link.on_close(CloseProbe { closed: closed_tx });
+    let (first_tx, mut first_rx) = unbounded_channel();
+    peer_link.on_close(CloseProbe { closed: first_tx });
+    let (second_tx, mut second_rx) = unbounded_channel();
+    peer_link.on_close(CloseProbe { closed: second_tx });
 
     peer_link.close();
-    let peer = within_timeout(closed_rx.recv())
+    let peer = within_timeout(second_rx.recv())
         .await
-        .expect("close is notified");
+        .expect("the replacement handler is notified");
     assert_eq!(peer, PeerId::new("bob"));
+    let stale = tokio::time::timeout(Duration::from_secs(2), first_rx.recv()).await;
+    assert!(
+        matches!(&stale, Ok(None)) || stale.is_err(),
+        "the replaced handler must not fire"
+    );
 }

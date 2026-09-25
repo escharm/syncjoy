@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -19,6 +20,8 @@ pub(crate) struct PeerLinkInner {
     pub(crate) dc: DataChannel,
     pub(crate) link: LinkHandle,
     pub(crate) closed: watch::Sender<bool>,
+    close_handler: std::sync::Mutex<Option<Arc<dyn CloseHandler>>>,
+    close_watched: AtomicBool,
     commands: UnboundedSender<Command>,
     inbound: Mutex<Option<UnboundedReceiver<Bytes>>>,
 }
@@ -45,6 +48,8 @@ impl PeerLinkInner {
             dc,
             link,
             closed,
+            close_handler: std::sync::Mutex::new(None),
+            close_watched: AtomicBool::new(false),
             commands,
             inbound: Mutex::new(Some(inbound)),
         }
@@ -95,20 +100,31 @@ impl PeerLink {
         });
     }
 
-    /// Invoke `handler` once this connection closes, whatever the cause:
-    /// remote close, local `close`/`close_peer`, teardown, or the last handle dropping.
+    /// Invoke the registered handler once this connection closes, whatever the
+    /// cause: remote close, local `close`/`close_peer`, teardown, or the last
+    /// handle dropping. One handler slot per link: re-registering replaces,
+    /// the callback fires at most once.
     pub fn on_close(&self, handler: impl CloseHandler) {
+        *self.inner.close_handler.lock().unwrap() = Some(Arc::new(handler));
+        if self.inner.close_watched.swap(true, Ordering::Relaxed) {
+            return;
+        }
         let mut closed = self.inner.closed.subscribe();
+        let inner = Arc::downgrade(&self.inner);
         let link = self.inner.link.clone();
         let peer = self.inner.peer.clone();
-        let handler = Arc::new(handler);
         transport::spawn(async move {
             while !*closed.borrow() {
                 if closed.changed().await.is_err() {
                     break;
                 }
             }
-            handler.on_close(link, peer).await;
+            let handler = inner
+                .upgrade()
+                .and_then(|inner| inner.close_handler.lock().unwrap().clone());
+            if let Some(handler) = handler {
+                handler.on_close(link, peer).await;
+            }
         });
     }
 

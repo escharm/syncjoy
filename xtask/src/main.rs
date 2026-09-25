@@ -55,8 +55,12 @@ fn e2e() -> Result<(), String> {
 
     thread::sleep(Duration::from_millis(1000));
     alice.write(&[0x0e]);
+    alice.wait_for("connecting to bob", 20)?;
     alice.wait_for("connected to bob", 20)?;
     bob.wait_for("channel open: alice", 20)?;
+
+    alice.write(&[0x0e]);
+    alice.wait_for("already connected to bob", 20)?;
 
     alice.write(b"hello bob\r");
     bob.wait_for("[alice] hello bob", 20)?;

@@ -68,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         terminal.draw(|frame| ui::draw(frame, &screen, &id, &to, &args.relay))?;
 
-        if !event::poll(Duration::from_millis(250))? {
+        if !event::poll(Duration::from_millis(100))? {
             continue;
         }
         let input_event = event::read()?;
@@ -82,11 +82,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match key.code {
             KeyCode::Char('c') if ctrl => break,
             KeyCode::Char('n') if ctrl => {
+                if screen.is_connected() {
+                    screen.log(format!("already connected to {to}"));
+                    continue;
+                }
+                screen.log(format!("connecting to {to}"));
                 let slot = Arc::clone(&peer_link_slot);
                 let dial_handle = handle.clone();
                 let dial_screen = Arc::clone(&screen);
                 let dial_to = to.clone();
                 tokio::spawn(async move {
+                    if dial_screen.is_connected() {
+                        return;
+                    }
                     match dial_handle.connect_peer(dial_to.clone()).await {
                         Ok(mut channel) => {
                             channel

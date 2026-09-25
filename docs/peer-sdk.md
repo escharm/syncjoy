@@ -20,7 +20,7 @@ let mut peer_link = relay_link.connect_peer("bob").await?;              // 与 b
 
 句柄可克隆共享同一连接。末位句柄被 drop、或任一句柄调用 `close`，连接即回收：本端表项清除、对端通道关闭。无句柄时可用 `relay_link.close_peer(to)` 显式拆除。`close` 与 drop 之后 `recv` 返回 `None`。
 
-关闭可被感知：`peer_link.on_close(handler)` 在连接关闭时回调一次，远端关闭、本地 `close`/`close_peer`、对端下线、末位句柄 drop 都会触发，回调签名与 `MsgHandler` 同构（`on_close(&self, link, peer)`）。
+关闭可被感知：`peer_link.on_close(handler)` 在连接关闭时回调一次，远端关闭、本地 `close`/`close_peer`、对端下线、末位句柄 drop 都会触发，回调签名与 `MsgHandler` 同构（`on_close(&self, link, peer)`）。单槽语义：重复注册以最后一次为准，回调至多触发一次。
 
 ## 拉取式收发
 
