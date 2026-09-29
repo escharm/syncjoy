@@ -1,10 +1,9 @@
 pub mod registry;
+pub mod session;
 pub mod turn;
 
-#[cfg(feature = "axum")]
-pub mod service;
+mod relay;
 
 pub use registry::PeerRegistry;
-#[cfg(feature = "axum")]
-pub use service::Relay;
+pub use relay::Relay;
 pub use turn::{generate_credentials, TurnConfig};

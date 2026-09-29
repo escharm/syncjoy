@@ -9,7 +9,8 @@ use crate::error::PeerError;
 use crate::peer::Peer;
 use crate::relay_link::{fail_dials_to, Command, Core, Event, RelayLink};
 use crate::rtc;
-use crate::transport::{self, IceServer};
+use crate::transport;
+use syncjoy_protocol::IceServer;
 
 const RELAY_PEER_PATH: &str = "/syncjoy/v1/peer";
 const STUN_URL: &str = "stun:stun.l.google.com:19302";
@@ -30,15 +31,17 @@ pub(crate) async fn connect_relay(peer: &Peer, relay_url: &str) -> Result<RelayL
     let (events, event_rx) = unbounded_channel::<Event>();
     let core = Arc::new(Core {
         commands,
+        incoming: Mutex::new(None),
+        pending: Mutex::new(HashMap::new()),
         events,
         dials: Mutex::new(HashMap::new()),
         conns: Mutex::new(HashMap::new()),
         channels: Mutex::new(HashMap::new()),
-        ice: Mutex::new(vec![IceServer {
-            urls: vec![STUN_URL.to_string()],
-            username: String::new(),
-            credential: String::new(),
-        }]),
+        ice: Mutex::new(if peer.ice_servers.is_empty() {
+            vec![IceServer::stun(STUN_URL)]
+        } else {
+            peer.ice_servers.clone()
+        }),
         next_req: AtomicU64::new(1),
     });
     transport::spawn(pump(socket_tx, socket_rx, core.clone(), command_rx));
@@ -83,8 +86,8 @@ async fn pump(
                         break;
                     }
                 }
-                Some(Command::Dial { req, to }) => {
-                    rtc::dial(&core, req, &to).await;
+                Some(Command::Dial { req, to, ice }) => {
+                    rtc::dial(&core, req, &to, ice).await;
                 }
                 Some(Command::Close { peer }) => {
                     rtc::teardown(&core, &peer);

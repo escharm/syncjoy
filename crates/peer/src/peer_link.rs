@@ -17,6 +17,7 @@ pub struct PeerLink {
 
 pub(crate) struct PeerLinkInner {
     pub(crate) peer: PeerId,
+    pub(crate) announced: AtomicBool,
     pub(crate) dc: DataChannel,
     pub(crate) link: LinkHandle,
     pub(crate) closed: watch::Sender<bool>,
@@ -45,6 +46,7 @@ impl PeerLinkInner {
         let (closed, _) = watch::channel(false);
         Self {
             peer,
+            announced: AtomicBool::new(false),
             dc,
             link,
             closed,

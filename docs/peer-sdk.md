@@ -14,7 +14,34 @@ let mut peer_link = relay_link.connect_peer("bob").await?;              // 与 b
 
 来向连接通过 `relay_link.next_event().await` 取得（`Event::Channel`，来向 DataChannel 打开时触发）。每对 peer 之间一条 DataChannel：`connect_peer` 对已连接的 peer 直接返回现有连接的句柄，不重复拨号；内置 15 秒拨号超时，穿透打不通时返回 `Timeout`。
 
-不消费 `next_event` 的宿主注意：来向连接会被自动应答并保持在线，其消息留在队列里无人读取。是否消费来向连接由宿主决定，但放弃消费就要接受上述后果（来向拒绝语义见 [issues/incoming-auto-accept.md](../issues/incoming-auto-accept.md)）。
+## ICE 配置（STUN/TURN）
+
+三层合并生效：
+
+```rust
+// ① 静态预置：自建 STUN/TURN；配置后不再默认使用内置公共 STUN
+let peer = Peer::builder()
+    .id("alice")
+    .ice_server(IceServer::stun("stun:stun.example.com:3478"))
+    .ice_server(IceServer::turn("turn:turn.example.com:3478", "user", "secret"))
+    .build();
+
+// ② relay 下发：relay 配置了 TURN 时在注册后自动签发限时凭证并追加（见 relay-sdk.md）
+
+// ③ 单次拨号追加：拨难达对端时临时补充，不持久化
+let peer_link = relay_link
+    .connect_peer_with(
+        "bob",
+        ConnectOptions {
+            ice_servers: vec![IceServer::turn("turn:relay.example.com:3478", "u", "p")],
+        },
+    )
+    .await?;
+```
+
+被叫方没有拨号选项入口，使用链路级配置（①+②）。
+
+来向连接可被裁决：`relay_link.on_incoming(handler)` 在 offer 到达时询问（`incoming(&self, from) -> bool`），返回 `false` 拒绝，SDK 回 `decline`，发起方 `connect_peer` 立即收到 `Rejected("declined by peer")`。未注册 handler 时自动接受（旧行为不变）。不消费 `next_event` 的宿主注意：被接受的来向连接保持在线，其消息留在队列里无人读取。
 
 ## 连接生命周期
 

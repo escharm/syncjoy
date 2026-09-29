@@ -1,17 +1,13 @@
-mod ws_peer;
-
 use std::sync::Arc;
 
 use crate::registry::PeerRegistry;
 use crate::turn::TurnConfig;
-use axum::routing::get;
-use axum::Router;
 use syncjoy_protocol::{PeerId, PeerToRelay, RelayToPeer};
 
 #[derive(Clone, Default)]
 pub struct Relay {
-    registry: Arc<PeerRegistry>,
-    turn: Option<TurnConfig>,
+    pub(crate) registry: Arc<PeerRegistry>,
+    pub(crate) turn: Option<TurnConfig>,
 }
 
 impl Relay {
@@ -30,14 +26,7 @@ impl Relay {
         &self.registry
     }
 
-    pub fn router(&self) -> Router {
-        Router::new()
-            .route("/syncjoy/healthz", get(health))
-            .route("/syncjoy/v1/peer", get(ws_peer::upgrade))
-            .with_state(self.clone())
-    }
-
-    fn route(&self, from: &PeerId, msg: PeerToRelay) {
+    pub(crate) fn route(&self, from: &PeerId, msg: PeerToRelay) {
         match msg {
             PeerToRelay::Hello { .. } => {}
             PeerToRelay::Offer { to, sdp } => {
@@ -75,11 +64,16 @@ impl Relay {
                     },
                 );
             }
+            PeerToRelay::Decline { to } => {
+                self.registry.route(
+                    &to,
+                    RelayToPeer::Rejected {
+                        to: from.clone(),
+                        reason: "declined by peer".to_owned(),
+                    },
+                );
+            }
             PeerToRelay::Pong => {}
         }
     }
-}
-
-async fn health() -> &'static str {
-    "ok"
 }

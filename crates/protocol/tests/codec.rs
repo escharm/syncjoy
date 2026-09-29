@@ -26,6 +26,16 @@ fn ice_candidate_roundtrip() {
 }
 
 #[test]
+fn decline_roundtrip() {
+    let original = PeerToRelay::Decline {
+        to: PeerId::new("alice"),
+    };
+    let text = encode(&original);
+    let parsed: PeerToRelay = decode(&text).unwrap();
+    assert_eq!(parsed, original);
+}
+
+#[test]
 fn rejects_other_versions() {
     let text = r#"{"v":99,"msg":{"type":"pong"}}"#;
     let parsed: Result<PeerToRelay, _> = decode(text);

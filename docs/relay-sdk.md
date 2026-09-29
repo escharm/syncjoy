@@ -1,17 +1,19 @@
 # relay SDK 使用方式
 
-relay 的定位是"嵌进宿主服务的信令组件"，不是独立进程。它是 peer 们拨入的 WebSocket server，职责是注册表与连接协商路由；数据面在 peer 之间直连，relay 不转发应用数据：公网中继承担全部流量会把它变成带宽与延迟的瓶颈，而 NAT 打洞后 peer 本可直连。
+relay 是零框架依赖的信令核心：注册表、TURN 凭证签发、信令会话状态机，不绑定任何 HTTP 库。宿主自己选框架、自己收 WebSocket，把连接折成一对通道交给会话入口，即获得完整信令语义（hello/ack 握手、注册与上下线广播、SDP/ICE 路由、TURN 下发）。数据面在 peer 之间直连，relay 不转发应用数据：公网中继承担全部流量会把它变成带宽与延迟的瓶颈，而 NAT 打洞后 peer 本可直连。
 
-## 起一个 relay
+## 宿主接线
 
 ```rust
-use syncjoy_relay::Relay;
+use syncjoy_relay::{session, Relay};
 
-let relay = Relay::new();
-let app = relay.router();
+// inbound: 收到对端文本帧就送入；outbound: 收到 relay 文本帧就写回 WebSocket
+session::run(relay, inbound_rx, outbound_tx).await;
 ```
 
-`Relay::router()` 挂载两个端点：`GET /syncjoy/healthz` 探活，`GET /syncjoy/v1/peer` 信令升级。完整可运行版本见 `examples/relay-host`。
+契约只有两条：WebSocket 升级端点挂在 `/syncjoy/v1/peer`（peer SDK 的固定拨入路径）；文本帧按原样进出通道。探活等自有端点由宿主路由自理。
+
+完整参考实现在 `examples/relay-host`（axum + healthz + TURN 环境变量），其他框架（actix、warp、裸 hyper）同构：收 ws、开通道对、spawn `session::run`。
 
 ## TURN 协助
 
@@ -40,16 +42,6 @@ TURN 服务本身由部署层的 coturn 提供，SDK 不内嵌：把有状态的
 | `rejected { to }` | relay → peer | offer 目标不在线 |
 
 relay 不解读 SDP 与 ICE 内容，只按 peer id 转交；无鉴权、无准入：鉴权所需的业务上下文（谁认识谁、谁授权谁连谁）只存在于使用方，SDK 内置的授权点只能回放使用方自己注入的判断。
-
-## 挂进既有服务
-
-宿主已有 axum Router 时，把 relay 的路由合并进去即可，路径前缀（`/syncjoy/*`）不会与业务路由冲突：
-
-```rust
-let app = Router::new()
-    .route("/my-own-api", get(my_handler))
-    .merge(relay.router());
-```
 
 ## 部署要点
 

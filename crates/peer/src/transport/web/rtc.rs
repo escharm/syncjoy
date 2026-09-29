@@ -182,6 +182,10 @@ impl PeerConnection {
 }
 
 impl DataChannel {
+    pub(crate) fn same(&self, other: &DataChannel) -> bool {
+        self.0 == other.0
+    }
+
     pub(crate) fn is_open(&self) -> bool {
         self.0.ready_state() == RtcDataChannelState::Open
     }

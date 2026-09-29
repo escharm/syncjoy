@@ -16,11 +16,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
         _ => Relay::new(),
     };
-    let app = relay.router();
 
     let addr = std::env::var("SYNCJOY_LISTEN").unwrap_or_else(|_| "0.0.0.0:7700".into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     println!("relay listening on {}", listener.local_addr()?);
-    axum::serve(listener, app).await?;
+    axum::serve(listener, router(relay)).await?;
     Ok(())
+}
+
+fn router(relay: Relay) -> axum::Router {
+    axum::Router::new()
+        .route("/syncjoy/healthz", axum::routing::get(health))
+        .route(
+            "/syncjoy/v1/peer",
+            axum::routing::get(upgrade).with_state(relay),
+        )
+}
+
+async fn health() -> &'static str {
+    "ok"
+}
+
+async fn upgrade(
+    ws: axum::extract::WebSocketUpgrade,
+    axum::extract::State(relay): axum::extract::State<Relay>,
+) -> impl axum::response::IntoResponse {
+    ws.on_upgrade(move |socket| bridge(socket, relay))
+}
+
+async fn bridge(socket: axum::extract::ws::WebSocket, relay: Relay) {
+    use axum::extract::ws::{Message, WebSocket};
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    let (mut sink, mut stream): (
+        futures_util::stream::SplitSink<WebSocket, Message>,
+        futures_util::stream::SplitStream<WebSocket>,
+    ) = socket.split();
+    let (in_tx, in_rx) = unbounded_channel::<String>();
+    let (out_tx, mut out_rx) = unbounded_channel::<String>();
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                incoming = stream.next() => match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        if in_tx.send(text.as_str().to_owned()).is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) | None => break,
+                },
+                outgoing = out_rx.recv() => match outgoing {
+                    Some(text) => {
+                        if sink.send(Message::Text(text.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                },
+            }
+        }
+    });
+
+    syncjoy_relay::session::run(relay, in_rx, out_tx).await;
 }

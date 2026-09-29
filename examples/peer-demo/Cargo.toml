@@ -5,9 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
 syncjoy-peer = { workspace = true }
 syncjoy-protocol = { workspace = true }
-async-trait = { workspace = true }
 clap = { workspace = true }
 ratatui = { workspace = true }
 tui-input = { workspace = true }

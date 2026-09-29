@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use crate::error::PeerError;
 use crate::peer_link::{PeerLink, PeerLinkInner};
-use crate::transport::{self, DataChannel, IceServer, PeerConnection};
+use crate::transport::{self, DataChannel, PeerConnection};
 use async_trait::async_trait;
 use bytes::Bytes;
+use syncjoy_protocol::IceServer;
 use syncjoy_protocol::PeerId;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
@@ -26,10 +27,31 @@ pub trait CloseHandler: Send + Sync + 'static {
     async fn on_close(&self, link: LinkHandle, peer: PeerId);
 }
 
+/// Decides whether an incoming connection request is accepted.
+/// Unset means accept everything; returning `false` declines with a wire-level
+/// `decline`, which the dialer observes as `Rejected("declined by peer")`.
+#[async_trait]
+pub trait IncomingHandler: Send + Sync + 'static {
+    async fn incoming(&self, from: &PeerId) -> bool;
+}
+
 pub(crate) enum Command {
     Signal(syncjoy_protocol::PeerToRelay),
-    Dial { req: u64, to: PeerId },
-    Close { peer: PeerId },
+    Dial {
+        req: u64,
+        to: PeerId,
+        ice: Vec<IceServer>,
+    },
+    Close {
+        peer: PeerId,
+    },
+}
+
+/// Per-dial options; `ice_servers` are merged over the link-level ICE
+/// configuration (builder seeds + relay-pushed TURN) for this dial only.
+#[derive(Default)]
+pub struct ConnectOptions {
+    pub ice_servers: Vec<IceServer>,
 }
 
 pub(crate) struct ChannelEntry {
@@ -45,6 +67,8 @@ pub(crate) struct DialWaiter {
 
 pub(crate) struct Core {
     pub(crate) commands: UnboundedSender<Command>,
+    pub(crate) incoming: Mutex<Option<Arc<dyn IncomingHandler>>>,
+    pub(crate) pending: Mutex<HashMap<PeerId, Arc<PeerLinkInner>>>,
     pub(crate) events: UnboundedSender<Event>,
     pub(crate) dials: Mutex<HashMap<u64, DialWaiter>>,
     pub(crate) conns: Mutex<HashMap<PeerId, PeerConnection>>,
@@ -56,7 +80,11 @@ pub(crate) struct Core {
 const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
 
 impl Core {
-    pub(crate) async fn connect_peer(&self, target: PeerId) -> Result<PeerLink, PeerError> {
+    pub(crate) async fn connect_peer(
+        &self,
+        target: PeerId,
+        options: ConnectOptions,
+    ) -> Result<PeerLink, PeerError> {
         if let Some(existing) = self.live_link(&target) {
             return Ok(existing);
         }
@@ -74,6 +102,7 @@ impl Core {
             .send(Command::Dial {
                 req,
                 to: target.clone(),
+                ice: options.ice_servers,
             })
             .is_err()
         {
@@ -89,6 +118,14 @@ impl Core {
                 let _ = self.commands.send(Command::Close { peer: target });
                 Err(PeerError::Timeout)
             }
+        }
+    }
+
+    pub(crate) async fn accept_incoming(&self, from: &PeerId) -> bool {
+        let handler = self.incoming.lock().unwrap().clone();
+        match handler {
+            None => true,
+            Some(handler) => handler.incoming(from).await,
         }
     }
 
@@ -116,12 +153,28 @@ impl Core {
     }
 
     pub(crate) fn retire(&self, peer: &PeerId) {
+        self.pending.lock().unwrap().remove(peer);
         let Some(entry) = self.channels.lock().unwrap().remove(peer) else {
             return;
         };
         if let Some(inner) = entry.link.upgrade() {
             let _ = inner.closed.send(true);
         }
+    }
+
+    /// Variant for a DataChannel close callback: a rebuilt connection for the
+    /// same peer must survive the old channel's late close event.
+    pub(crate) fn retire_channel(&self, peer: &PeerId, dc: &DataChannel) {
+        let current = {
+            let channels = self.channels.lock().unwrap();
+            channels.get(peer).map(|entry| entry.dc.clone())
+        };
+        if let Some(current) = current {
+            if !current.same(dc) {
+                return;
+            }
+        }
+        self.retire(peer);
     }
 }
 
@@ -163,7 +216,20 @@ pub struct LinkHandle {
 
 impl LinkHandle {
     pub async fn connect_peer(&self, target: impl Into<PeerId>) -> Result<PeerLink, PeerError> {
-        self.core.connect_peer(target.into()).await
+        self.connect_peer_with(target, ConnectOptions::default())
+            .await
+    }
+
+    pub async fn connect_peer_with(
+        &self,
+        target: impl Into<PeerId>,
+        options: ConnectOptions,
+    ) -> Result<PeerLink, PeerError> {
+        self.core.connect_peer(target.into(), options).await
+    }
+
+    pub fn on_incoming(&self, handler: impl IncomingHandler) {
+        *self.core.incoming.lock().unwrap() = Some(Arc::new(handler));
     }
 
     pub fn close_peer(&self, target: impl Into<PeerId>) {
@@ -201,6 +267,18 @@ impl RelayLink {
 
     pub async fn connect_peer(&self, target: impl Into<PeerId>) -> Result<PeerLink, PeerError> {
         self.handle().connect_peer(target).await
+    }
+
+    pub async fn connect_peer_with(
+        &self,
+        target: impl Into<PeerId>,
+        options: ConnectOptions,
+    ) -> Result<PeerLink, PeerError> {
+        self.handle().connect_peer_with(target, options).await
+    }
+
+    pub fn on_incoming(&self, handler: impl IncomingHandler) {
+        *self.core.incoming.lock().unwrap() = Some(Arc::new(handler));
     }
 
     pub fn close_peer(&self, target: impl Into<PeerId>) {

@@ -1959,6 +1959,7 @@ name = "relay-host"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "futures-util",
  "syncjoy-relay",
  "tokio",
 ]

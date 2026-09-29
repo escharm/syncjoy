@@ -9,7 +9,7 @@ use chat::{CloseNotice, Receiver, Submission};
 use clap::Parser;
 use ratatui::crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers};
 use screen::Screen;
-use syncjoy_peer::{Event as PeerEvent, Peer, PeerError, PeerLink};
+use syncjoy_peer::{Event as PeerEvent, IncomingHandler, Peer, PeerError, PeerLink};
 use syncjoy_protocol::PeerId;
 use tokio::sync::Mutex;
 
@@ -25,20 +25,36 @@ struct Args {
     #[arg(long)]
     to: String,
 
+    /// Reject incoming connection requests (this peer only dials out).
+    #[arg(long)]
+    reject_incoming: bool,
+
     /// Relay websocket url.
     #[arg(long, env = "SYNCJOY_RELAY", default_value = "ws://127.0.0.1:7700")]
     relay: String,
 }
 
+struct RejectAll;
+
+#[async_trait::async_trait]
+impl IncomingHandler for RejectAll {
+    async fn incoming(&self, _from: &PeerId) -> bool {
+        false
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-
     let peer = Peer::builder().id(args.id).build();
     let mut relay_link = peer.connect_relay(&args.relay).await?;
     let id = peer.id().clone();
     let to = PeerId::new(args.to);
     let screen = Arc::new(Screen::default());
+
+    if args.reject_incoming {
+        relay_link.on_incoming(RejectAll);
+    }
 
     let handle = relay_link.handle();
     let peer_link_slot = Arc::new(Mutex::new(None::<PeerLink>));
@@ -62,6 +78,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     screen.log(format!("ctrl-n connects to {to}"));
+    screen.log(if args.reject_incoming {
+        "incoming: rejected (dial out to connect)".to_owned()
+    } else {
+        "incoming: auto-accepted".to_owned()
+    });
     screen.log("enter sends · /quit or ctrl-c exits".into());
 
     let mut terminal = ratatui::init();

@@ -2,22 +2,18 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use syncjoy_protocol::{decode, encode, PeerId, PeerToRelay, RelayToPeer};
+mod common;
+
+use common::serve;
 use syncjoy_relay::Relay;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 async fn start_relay() -> Result<String, Box<dyn std::error::Error>> {
-    let relay = Relay::new();
-    let app = relay.router();
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
-    });
-    Ok(format!("ws://{addr}"))
+    serve(Relay::new()).await
 }
 
 async fn dial(relay_url: &str, id: &str) -> Result<Ws, Box<dyn std::error::Error>> {

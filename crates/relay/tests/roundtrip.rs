@@ -2,21 +2,19 @@ use std::future::Future;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use syncjoy_peer::{Bytes, CloseHandler, Event, LinkHandle, MsgHandler, Peer, PeerLink};
+use syncjoy_peer::{
+    Bytes, CloseHandler, ConnectOptions, Event, IceServer, IncomingHandler, LinkHandle, MsgHandler,
+    Peer, PeerError, PeerLink,
+};
 use syncjoy_protocol::PeerId;
 use syncjoy_relay::Relay;
-use tokio::net::TcpListener;
+mod common;
+
+use common::serve;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
 async fn start_relay() -> Result<String, Box<dyn std::error::Error>> {
-    let relay = Relay::new();
-    let app = relay.router();
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
-    });
-    Ok(format!("ws://{addr}"))
+    serve(Relay::new()).await
 }
 
 async fn within_timeout<T>(future: impl Future<Output = T>) -> T {
@@ -51,6 +49,40 @@ async fn peer_reaches_peer_over_webrtc() {
     peer_link.close();
     let closed = within_timeout(peer_link.recv()).await;
     assert!(closed.is_none(), "channel closes after close()");
+}
+
+struct Refuser;
+
+#[async_trait]
+impl IncomingHandler for Refuser {
+    async fn incoming(&self, _from: &PeerId) -> bool {
+        false
+    }
+}
+
+#[tokio::test]
+async fn declined_dial_reports_rejection() {
+    let relay_url = start_relay().await.expect("relay starts");
+
+    let bob = Peer::builder().id("bob").build();
+    let bob_relay_link = bob.connect_relay(&relay_url).await.expect("bob registers");
+    bob_relay_link.on_incoming(Refuser);
+
+    let alice = Peer::builder().id("alice").build();
+    let alice_relay_link = alice
+        .connect_relay(&relay_url)
+        .await
+        .expect("alice registers");
+
+    let refused = within_timeout(alice_relay_link.connect_peer("bob")).await;
+    match refused {
+        Err(PeerError::Rejected(reason)) => assert!(
+            reason.contains("declined"),
+            "expected a decline reason, got {reason}"
+        ),
+        Ok(_) => panic!("expected a decline, got a channel"),
+        Err(other) => panic!("expected a decline, got {other}"),
+    }
 }
 
 struct EchoLink;
@@ -113,6 +145,41 @@ async fn start_echo_peer(relay_url: &str, id: &str) -> LinkHandle {
         }
     });
     handle
+}
+
+#[tokio::test]
+async fn custom_ice_still_connects_over_loopback() {
+    let relay_url = start_relay().await.expect("relay starts");
+    let _bob = start_echo_peer(&relay_url, "bob").await;
+
+    let alice = Peer::builder()
+        .id("alice")
+        .ice_server(IceServer::stun("stun:unreachable.example:3478"))
+        .build();
+    let alice_relay_link = alice
+        .connect_relay(&relay_url)
+        .await
+        .expect("alice registers");
+
+    let mut peer_link: PeerLink = within_timeout(alice_relay_link.connect_peer_with(
+        "bob",
+        ConnectOptions {
+            ice_servers: vec![IceServer::turn(
+                "turn:unreachable.example:3478",
+                "user",
+                "secret",
+            )],
+        },
+    ))
+    .await
+    .expect("host candidates connect despite dead stun/turn entries");
+
+    peer_link.send("ping").await.expect("send delivers");
+    let reply = within_timeout(peer_link.recv()).await;
+    assert_eq!(
+        String::from_utf8_lossy(&reply.expect("echo returns")),
+        "ping"
+    );
 }
 
 #[tokio::test]

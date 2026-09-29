@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use syncjoy_protocol::{PeerId, PeerToRelay};
@@ -15,8 +16,14 @@ enum OpenAction {
     Incoming,
 }
 
-pub(crate) async fn dial(core: &Arc<Core>, req: u64, to: &PeerId) {
-    let ice = core.ice.lock().unwrap().clone();
+pub(crate) async fn dial(
+    core: &Arc<Core>,
+    req: u64,
+    to: &PeerId,
+    extra_ice: Vec<syncjoy_protocol::IceServer>,
+) {
+    let mut ice = core.ice.lock().unwrap().clone();
+    ice.extend(extra_ice);
     let pc = match transport::new_peer_connection(ice).await {
         Ok(pc) => pc,
         Err(error) => {
@@ -53,6 +60,12 @@ pub(crate) async fn dial(core: &Arc<Core>, req: u64, to: &PeerId) {
 
 pub(crate) async fn answer(core: &Arc<Core>, from: &PeerId, sdp: &str) {
     if connection_alive(core, from) {
+        return;
+    }
+    if !core.accept_incoming(from).await {
+        let _ = core
+            .commands
+            .send(Command::Signal(PeerToRelay::Decline { to: from.clone() }));
         return;
     }
     teardown(core, from);
@@ -139,43 +152,29 @@ fn connection_alive(core: &Arc<Core>, peer: &PeerId) -> bool {
 
 async fn attach_incoming(core: Arc<Core>, peer: PeerId, dc: DataChannel) {
     let already_open = dc.is_open();
-    wire_data_channel(&core, &peer, dc.clone(), OpenAction::Incoming);
+    let inner = wire_data_channel(&core, &peer, dc, OpenAction::Incoming);
     if already_open {
-        fire_open(&core, &peer, dc, OpenAction::Incoming);
+        if let Some(inner) = inner {
+            fire_open(&core, &peer, inner, OpenAction::Incoming);
+        }
     }
 }
 
-fn wire_data_channel(core: &Arc<Core>, peer: &PeerId, dc: DataChannel, action: OpenAction) {
-    let core_for_msg = Arc::clone(core);
-    let peer_for_msg = peer.clone();
-    dc.on_message(Box::new(move |bytes| {
-        dispatch(&core_for_msg, &peer_for_msg, bytes);
-    }));
-
-    let core_for_open = Arc::clone(core);
-    let peer_for_open = peer.clone();
-    let dc_for_open = dc.clone();
-    dc.on_open(Box::new(move || {
-        fire_open(&core_for_open, &peer_for_open, dc_for_open.clone(), action);
-    }));
-
-    let core_for_close = Arc::clone(core);
-    let peer_for_close = peer.clone();
-    dc.on_close(Box::new(move || {
-        core_for_close.retire(&peer_for_close);
-    }));
-}
-
-fn fire_open(core: &Arc<Core>, peer: &PeerId, dc: DataChannel, action: OpenAction) {
+fn wire_data_channel(
+    core: &Arc<Core>,
+    peer: &PeerId,
+    dc: DataChannel,
+    action: OpenAction,
+) -> Option<Arc<PeerLinkInner>> {
     let (inbound_tx, inbound_rx) = unbounded_channel();
     let inner = {
         let mut channels = core.channels.lock().unwrap();
         if channels.contains_key(peer) {
-            return;
+            return None;
         }
         let inner = Arc::new(PeerLinkInner::new(
             peer.clone(),
-            dc,
+            dc.clone(),
             LinkHandle {
                 core: Arc::clone(core),
             },
@@ -185,13 +184,49 @@ fn fire_open(core: &Arc<Core>, peer: &PeerId, dc: DataChannel, action: OpenActio
         channels.insert(
             peer.clone(),
             ChannelEntry {
-                dc: inner.dc.clone(),
+                dc,
                 inbound: inbound_tx,
                 link: Arc::downgrade(&inner),
             },
         );
+        core.pending
+            .lock()
+            .unwrap()
+            .insert(peer.clone(), Arc::clone(&inner));
         inner
     };
+
+    let core_for_msg = Arc::clone(core);
+    let peer_for_msg = peer.clone();
+    let msg_dc = inner.dc.clone();
+    msg_dc.on_message(Box::new(move |bytes| {
+        dispatch(&core_for_msg, &peer_for_msg, bytes);
+    }));
+
+    let core_for_open = Arc::clone(core);
+    let peer_for_open = peer.clone();
+    let open_inner = Arc::clone(&inner);
+    let open_dc = inner.dc.clone();
+    open_dc.on_open(Box::new(move || {
+        let handed = Arc::clone(&open_inner);
+        fire_open(&core_for_open, &peer_for_open, handed, action);
+    }));
+
+    let peer_for_close = peer.clone();
+    let close_dc = inner.dc.clone();
+    let close_core = Arc::clone(core);
+    inner.dc.on_close(Box::new(move || {
+        close_core.retire_channel(&peer_for_close, &close_dc);
+    }));
+
+    Some(inner)
+}
+
+fn fire_open(core: &Arc<Core>, peer: &PeerId, inner: Arc<PeerLinkInner>, action: OpenAction) {
+    if inner.announced.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    core.pending.lock().unwrap().remove(peer);
     let peer_link = PeerLink::new(inner);
     match action {
         OpenAction::Dial(req) => complete_dial(core, req, Ok(peer_link)),

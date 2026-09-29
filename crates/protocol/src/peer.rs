@@ -8,6 +8,7 @@ pub enum PeerToRelay {
     Offer { to: PeerId, sdp: String },
     Answer { to: PeerId, sdp: String },
     Ice { to: PeerId, candidate: IceCandidate },
+    Decline { to: PeerId },
     Pong,
 }
 
@@ -43,6 +44,35 @@ pub enum RelayToPeer {
         to: PeerId,
         reason: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IceServer {
+    pub urls: Vec<String>,
+    pub username: String,
+    pub credential: String,
+}
+
+impl IceServer {
+    pub fn stun(url: impl Into<String>) -> Self {
+        Self {
+            urls: vec![url.into()],
+            username: String::new(),
+            credential: String::new(),
+        }
+    }
+
+    pub fn turn(
+        url: impl Into<String>,
+        username: impl Into<String>,
+        credential: impl Into<String>,
+    ) -> Self {
+        Self {
+            urls: vec![url.into()],
+            username: username.into(),
+            credential: credential.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
