@@ -1,7 +1,33 @@
 use syncjoy_relay::{Relay, TurnConfig};
 
+fn install_panic_logger() {
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!("{}", panic_record(info));
+    }));
+}
+
+/// One self-sufficient record: message, location, thread, backtrace.
+/// Printed unconditionally on every panic, no RUST_BACKTRACE needed.
+fn panic_record(info: &std::panic::PanicHookInfo<'_>) -> String {
+    let thread = std::thread::current();
+    let thread_name = thread.name().unwrap_or("<unnamed>");
+    let location = info
+        .location()
+        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+        .unwrap_or_else(|| "unknown".to_owned());
+    let message = info
+        .payload_as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| "<non-string panic payload>".to_owned());
+    format!(
+        "panic in thread {thread_name} at {location}: {message}\nstack backtrace:\n{}",
+        std::backtrace::Backtrace::force_capture()
+    )
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    install_panic_logger();
     let relay = match (
         std::env::var("SYNCJOY_TURN_URL"),
         std::env::var("SYNCJOY_TURN_SECRET"),
