@@ -5,9 +5,11 @@ use tokio_tungstenite::tungstenite::Message;
 
 use super::super::spawn;
 
+pub(crate) type SignalingSender = UnboundedSender<String>;
+
 pub(crate) async fn connect_signaling(
     url: String,
-) -> Result<(UnboundedSender<String>, UnboundedReceiver<String>), String> {
+) -> Result<(SignalingSender, UnboundedReceiver<String>), String> {
     let (ws, _) = connect_async(url).await.map_err(|e| e.to_string())?;
     let (mut sink, mut stream) = ws.split();
 

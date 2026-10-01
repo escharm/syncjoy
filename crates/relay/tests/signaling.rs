@@ -21,6 +21,7 @@ async fn dial(relay_url: &str, id: &str) -> Result<Ws, Box<dyn std::error::Error
     let (mut ws, _) = connect_async(&url).await?;
     ws.send(Message::Text(encode(&PeerToRelay::Hello {
         peer_id: PeerId::new(id),
+        token: None,
     })))
     .await?;
     while let Some(item) = ws.next().await {

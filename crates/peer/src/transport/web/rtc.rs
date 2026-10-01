@@ -14,6 +14,7 @@ use web_sys::{
     RtcSessionDescriptionInit,
 };
 
+use super::keepalive::Keepalive;
 use super::super::IceServer;
 
 pub(crate) fn spawn<F>(future: F)
@@ -37,19 +38,31 @@ pub(crate) async fn timeout<F: Future>(duration: Duration, future: F) -> Result<
     }
 }
 
-pub(crate) struct PeerConnection(RtcPeerConnection);
+pub(crate) struct PeerConnection {
+    inner: RtcPeerConnection,
+    keepalive: Keepalive,
+}
 
-pub(crate) struct DataChannel(RtcDataChannel);
+pub(crate) struct DataChannel {
+    inner: RtcDataChannel,
+    keepalive: Keepalive,
+}
 
 impl Clone for PeerConnection {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self {
+            inner: self.inner.clone(),
+            keepalive: self.keepalive.clone(),
+        }
     }
 }
 
 impl Clone for DataChannel {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self {
+            inner: self.inner.clone(),
+            keepalive: self.keepalive.clone(),
+        }
     }
 }
 
@@ -75,7 +88,10 @@ pub(crate) async fn new_peer_connection(servers: Vec<IceServer>) -> Result<PeerC
     let config = RtcConfiguration::new();
     config.set_ice_servers(&Array::from_iter(servers.iter().map(ice_server_object)));
     let pc = RtcPeerConnection::new_with_configuration(&config).map_err(|e| format!("{e:?}"))?;
-    Ok(PeerConnection(pc))
+    Ok(PeerConnection {
+        inner: pc,
+        keepalive: Keepalive::default(),
+    })
 }
 
 impl PeerConnection {
@@ -96,52 +112,58 @@ impl PeerConnection {
                 });
             }
         }) as Box<dyn FnMut(RtcPeerConnectionIceEvent)>);
-        self.0
+        self.inner
             .set_onicecandidate(Some(on_candidate.as_ref().unchecked_ref()));
-        on_candidate.forget();
+        self.keepalive.keep(on_candidate.into_js_value());
     }
 
     pub(crate) fn on_data_channel(&self, handler: Box<dyn Fn(DataChannel) + Send + Sync>) {
         let handler: std::sync::Arc<dyn Fn(DataChannel) + Send + Sync> =
             std::sync::Arc::from(handler);
         let on_channel = Closure::wrap(Box::new(move |event: RtcDataChannelEvent| {
-            handler(DataChannel(event.channel()));
+            handler(DataChannel {
+                inner: event.channel(),
+                keepalive: Keepalive::default(),
+            });
         }) as Box<dyn FnMut(RtcDataChannelEvent)>);
-        self.0
+        self.inner
             .set_ondatachannel(Some(on_channel.as_ref().unchecked_ref()));
-        on_channel.forget();
+        self.keepalive.keep(on_channel.into_js_value());
     }
 
     pub(crate) async fn create_data_channel(&self, label: &str) -> Result<DataChannel, String> {
-        Ok(DataChannel(self.0.create_data_channel(label)))
+        Ok(DataChannel {
+            inner: self.inner.create_data_channel(label),
+            keepalive: Keepalive::default(),
+        })
     }
 
     pub(crate) async fn create_offer(&self) -> Result<String, String> {
-        let promise = self.0.create_offer();
+        let promise = self.inner.create_offer();
         let init: RtcSessionDescriptionInit = JsFuture::from(promise)
             .await
             .map_err(|e| format!("{e:?}"))?
             .unchecked_into();
-        JsFuture::from(self.0.set_local_description(&init))
+        JsFuture::from(self.inner.set_local_description(&init))
             .await
             .map_err(|e| format!("{e:?}"))?;
         Ok(self.local_description().await)
     }
 
     pub(crate) async fn create_answer(&self) -> Result<String, String> {
-        let promise = self.0.create_answer();
+        let promise = self.inner.create_answer();
         let init: RtcSessionDescriptionInit = JsFuture::from(promise)
             .await
             .map_err(|e| format!("{e:?}"))?
             .unchecked_into();
-        JsFuture::from(self.0.set_local_description(&init))
+        JsFuture::from(self.inner.set_local_description(&init))
             .await
             .map_err(|e| format!("{e:?}"))?;
         Ok(self.local_description().await)
     }
 
     pub(crate) async fn local_description(&self) -> String {
-        self.0
+        self.inner
             .local_description()
             .map(|desc| desc.sdp())
             .map(String::from)
@@ -151,7 +173,7 @@ impl PeerConnection {
     pub(crate) async fn set_remote_offer(&self, sdp: &str) -> Result<(), String> {
         let init = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
         init.set_sdp(sdp);
-        JsFuture::from(self.0.set_remote_description(&init))
+        JsFuture::from(self.inner.set_remote_description(&init))
             .await
             .map(|_| ())
             .map_err(|e| format!("{e:?}"))
@@ -160,7 +182,7 @@ impl PeerConnection {
     pub(crate) async fn set_remote_answer(&self, sdp: &str) -> Result<(), String> {
         let init = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
         init.set_sdp(sdp);
-        JsFuture::from(self.0.set_remote_description(&init))
+        JsFuture::from(self.inner.set_remote_description(&init))
             .await
             .map(|_| ())
             .map_err(|e| format!("{e:?}"))
@@ -170,28 +192,28 @@ impl PeerConnection {
         let init = RtcIceCandidateInit::new(&candidate.candidate);
         init.set_sdp_m_line_index(candidate.sdp_mline_index);
         let _ = JsFuture::from(
-            self.0
+            self.inner
                 .add_ice_candidate_with_opt_rtc_ice_candidate_init(Some(&init)),
         )
         .await;
     }
 
     pub(crate) fn close(&self) {
-        self.0.close();
+        self.inner.close();
     }
 }
 
 impl DataChannel {
     pub(crate) fn same(&self, other: &DataChannel) -> bool {
-        self.0 == other.0
+        self.inner == other.inner
     }
 
     pub(crate) fn is_open(&self) -> bool {
-        self.0.ready_state() == RtcDataChannelState::Open
+        self.inner.ready_state() == RtcDataChannelState::Open
     }
 
     pub(crate) async fn send(&self, bytes: Bytes) -> Result<(), String> {
-        self.0
+        self.inner
             .send_with_u8_array(&bytes)
             .map_err(|e| format!("{e:?}"))
     }
@@ -203,9 +225,9 @@ impl DataChannel {
                 handler(Bytes::from(js_sys::Uint8Array::new(&buffer).to_vec()));
             }
         }) as Box<dyn FnMut(web_sys::MessageEvent)>);
-        self.0
+        self.inner
             .set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-        on_message.forget();
+        self.keepalive.keep(on_message.into_js_value());
     }
 
     pub(crate) fn on_open(&self, handler: Box<dyn Fn() + Send + Sync>) {
@@ -213,8 +235,8 @@ impl DataChannel {
         let on_open = Closure::wrap(Box::new(move |_: web_sys::Event| {
             handler();
         }) as Box<dyn FnMut(web_sys::Event)>);
-        self.0.set_onopen(Some(on_open.as_ref().unchecked_ref()));
-        on_open.forget();
+        self.inner.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+        self.keepalive.keep(on_open.into_js_value());
     }
 
     pub(crate) fn on_close(&self, handler: Box<dyn Fn() + Send + Sync>) {
@@ -222,7 +244,7 @@ impl DataChannel {
         let on_close = Closure::wrap(Box::new(move |_: web_sys::Event| {
             handler();
         }) as Box<dyn FnMut(web_sys::Event)>);
-        self.0.set_onclose(Some(on_close.as_ref().unchecked_ref()));
-        on_close.forget();
+        self.inner.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+        self.keepalive.keep(on_close.into_js_value());
     }
 }

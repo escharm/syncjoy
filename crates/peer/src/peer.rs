@@ -6,12 +6,14 @@ use syncjoy_protocol::{IceServer, PeerId};
 pub struct Peer {
     pub(crate) id: PeerId,
     pub(crate) ice_servers: Vec<IceServer>,
+    pub(crate) relay_token: Option<String>,
 }
 
 #[derive(Default)]
 pub struct PeerBuilder {
     id: Option<String>,
     ice_servers: Vec<IceServer>,
+    relay_token: Option<String>,
 }
 
 impl PeerBuilder {
@@ -32,10 +34,19 @@ impl PeerBuilder {
         self
     }
 
+    /// Credential presented in the hello frame when the relay runs an
+    /// admission guard. Sent inside the signaling channel, never in the
+    /// dial URL.
+    pub fn relay_token(mut self, token: impl Into<String>) -> Self {
+        self.relay_token = Some(token.into());
+        self
+    }
+
     pub fn build(self) -> Peer {
         Peer {
             id: PeerId::new(self.id.expect("id is required")),
             ice_servers: self.ice_servers,
+            relay_token: self.relay_token,
         }
     }
 }

@@ -4,6 +4,7 @@
 
 消息内容是不透明字节：SDK 不解释、不编码，用 JSON、protobuf 还是私有格式由使用方决定。载荷载体是共享字节缓冲 `Bytes`（`syncjoy_peer::Bytes`，按 `&[u8]` 解引用，克隆是引用计数而非拷贝），接收路径对透传场景零拷贝。收发通道是与对端的 WebRTC DataChannel 直连，建立过程见 [architecture.md](architecture.md#msg-flow)。
 
+<a id="connect"></a>
 ## 连接
 
 ```rust
@@ -13,6 +14,31 @@ let mut peer_link = relay_link.connect_peer("bob").await?;              // 与 b
 ```
 
 来向连接通过 `relay_link.next_event().await` 取得（`Event::Channel`，来向 DataChannel 打开时触发）。每对 peer 之间一条 DataChannel：`connect_peer` 对已连接的 peer 直接返回现有连接的句柄，不重复拨号；内置 15 秒拨号超时，穿透打不通时返回 `Timeout`。
+
+relay 配置了注册准入时（见 [relay-sdk.md](relay-sdk.md#guard)），用 `relay_token(...)` 提供随 hello 帧发出的凭据；凭据只进信令通道，不进拨号 URL。relay 拒绝准入时 `connect_relay` 返回 `PeerError::Rejected`，携带 relay 给出的原因。
+
+<a id="presence"></a>
+
+## 在线状态
+
+relay 在 peer 注册与退出时向其余 peer 广播，SDK 转为 `Event::PeerOnline { peer_id }` 与 `Event::PeerOffline { peer_id }`，与来向连接同从 `relay_link.next_event()` 取得：
+
+```rust
+while let Some(event) = relay_link.next_event().await {
+    match event {
+        Event::Channel(peer_link) => { /* 来向连接，见上节 */ }
+        Event::PeerOnline { peer_id } => { /* 可向其 connect_peer */ }
+        Event::PeerOffline { peer_id } => { /* 撤下该 peer 的在线状态 */ }
+    }
+}
+```
+
+边界：
+
+- 广播不含当事人：自己不会收到自己的上下线；
+- 没有初始在线列表：`connect_relay` 时已在场的 peer 不产生事件，此后各自的上下线才可见；
+- 收到 `PeerOffline` 时，本端与该 peer 的连接已被 SDK 拆除，`on_close` 回调照常触发；
+- 事件只投递给 `next_event` 的消费者，不消费则积压（无界），见 [issues/unbounded-queues.md](../issues/unbounded-queues.md)。
 
 ## ICE 配置（STUN/TURN）
 

@@ -1,12 +1,14 @@
 use syncjoy_protocol::{decode, encode, PeerToRelay, RelayToPeer};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
+use crate::heartbeat::{Heartbeat, Probe};
 use crate::registry::RegisteredPeer;
 use crate::relay::Relay;
 use crate::turn::generate_credentials;
 use std::sync::Arc;
 
 const TURN_TTL_SECS: u64 = 3600;
+const REGISTRATION_DENIED: &str = "registration denied";
 
 /// Drive one signaling connection over a frame pipe: inbound yields peer text
 /// frames, outbound accepts relay text frames. Framework-free; the axum adapter
@@ -17,9 +19,20 @@ pub async fn run(
     outbound: UnboundedSender<String>,
 ) {
     let registry = Arc::clone(&relay.registry);
-    let Some(PeerToRelay::Hello { peer_id }) = read_hello(&mut inbound).await else {
+    let Some(PeerToRelay::Hello { peer_id, token }) = read_hello(&mut inbound).await else {
         return;
     };
+
+    if let Some(guard) = &relay.guard {
+        if !guard(&peer_id, token.as_deref()) {
+            tracing::info!(%peer_id, "registration denied");
+            let _ = send(&outbound, &RelayToPeer::Rejected {
+                to: peer_id.clone(),
+                reason: REGISTRATION_DENIED.to_owned(),
+            });
+            return;
+        }
+    }
 
     let RegisteredPeer {
         generation,
@@ -44,10 +57,12 @@ pub async fn run(
     );
     tracing::info!(%peer_id, "peer online");
 
+    let heartbeat = Heartbeat::new(relay.heartbeat.clone());
     loop {
         tokio::select! {
             text = inbound.recv() => match text {
                 Some(text) => match decode::<PeerToRelay>(&text) {
+                    Ok(PeerToRelay::Pong) => heartbeat.pong(),
                     Ok(msg) => relay.route(&peer_id, msg),
                     Err(error) => {
                         tracing::warn!(%error, "invalid signal frame");
@@ -63,6 +78,18 @@ pub async fn run(
                     }
                 }
                 None => break,
+            },
+            probe = heartbeat.wait() => match probe {
+                Probe::Send => {
+                    if !send(&outbound, &RelayToPeer::Ping) {
+                        break;
+                    }
+                    heartbeat.probe_sent();
+                }
+                Probe::Expired => {
+                    tracing::info!(%peer_id, "heartbeat timeout");
+                    break;
+                }
             },
         }
     }

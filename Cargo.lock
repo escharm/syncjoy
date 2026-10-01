@@ -2525,11 +2525,13 @@ name = "syncjoy-peer"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "bytes",
  "futures-util",
  "gloo-timers",
  "js-sys",
  "syncjoy-protocol",
+ "syncjoy-relay",
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite 0.24.0",

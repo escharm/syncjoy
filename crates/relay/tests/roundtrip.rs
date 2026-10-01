@@ -112,8 +112,10 @@ async fn on_msg_roundtrip() {
     let bob = Peer::builder().id("bob").build();
     let mut bob_relay_link = bob.connect_relay(&relay_url).await.expect("bob registers");
     tokio::spawn(async move {
-        while let Some(Event::Channel(mut peer_link)) = bob_relay_link.next_event().await {
-            peer_link.on_msg(EchoLink).await;
+        while let Some(event) = bob_relay_link.next_event().await {
+            if let Event::Channel(mut peer_link) = event {
+                peer_link.on_msg(EchoLink).await;
+            }
         }
     });
 
@@ -140,8 +142,10 @@ async fn start_echo_peer(relay_url: &str, id: &str) -> LinkHandle {
     let mut relay_link = peer.connect_relay(relay_url).await.expect("registers");
     let handle = relay_link.handle();
     tokio::spawn(async move {
-        while let Some(Event::Channel(mut peer_link)) = relay_link.next_event().await {
-            peer_link.on_msg(EchoLink).await;
+        while let Some(event) = relay_link.next_event().await {
+            if let Event::Channel(mut peer_link) = event {
+                peer_link.on_msg(EchoLink).await;
+            }
         }
     });
     handle

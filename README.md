@@ -6,7 +6,7 @@
 
 | crate | 部署位置 | 职责 |
 |---|---|---|
-| `syncjoy-relay` | 公网主机 | 信令与连接协助：注册表与 SDP/ICE 路由、上下线广播、来向 `decline` 回击、可选 TURN 凭证签发；零框架依赖，宿主自选 HTTP 库（axum 接线参考 `examples/relay-host`）；无头，不转发应用数据 |
+| `syncjoy-relay` | 公网主机 | 信令与连接协助：注册表与 SDP/ICE 路由、上下线广播、来向 `decline` 回击、可选 TURN 凭证签发、可选注册准入（guard）；零框架依赖，宿主自选 HTTP 库（axum 接线参考 `examples/relay-host`）；无头，不转发应用数据 |
 | `syncjoy-peer` | 任意参与方 | 对等节点 SDK：`connect_relay(relay)` 注册自己，`connect_peer(to)` 得到与该 peer 的 `PeerLink`（WebRTC 直连，`send`/`recv`/`on_msg`/`on_close`）；`on_incoming` 裁决来向（`peer-demo` 以 `--reject-incoming` 切换固定拒绝，可交叉测试）；ICE 三层配置（builder 预置、relay 下发、单次拨号追加）；native 与 wasm 双传输层 |
 | `syncjoy-protocol` | 内部依赖 | relay 与 peer 共用的信令消息类型与编解码（v6） |
 
@@ -53,6 +53,7 @@ syncjoy/
 ├── examples/peer-demo       宿主示例：交互式 peer，连外部 relay 与指定 peer 聊天
 ├── xtask/                   任务编排：feature 矩阵与多进程集成验证
 ├── docs/                    设计文档与操作指南
+├── decisions/               已拍板决策记录（ADR）
 ├── roadmap/                 规划中的方向
 ├── todos/                   近期待办
 └── issues/                  已知问题与 open questions

@@ -28,7 +28,7 @@ fn panic_record(info: &std::panic::PanicHookInfo<'_>) -> String {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     install_panic_logger();
-    let relay = match (
+    let mut relay = match (
         std::env::var("SYNCJOY_TURN_URL"),
         std::env::var("SYNCJOY_TURN_SECRET"),
     ) {
@@ -42,6 +42,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
         _ => Relay::new(),
     };
+    if let Ok(expected) = std::env::var("SYNCJOY_PEER_TOKEN") {
+        relay = relay.with_guard(move |_, token| token == Some(expected.as_str()));
+        println!("registration guard on: hello token required");
+    }
 
     let addr = std::env::var("SYNCJOY_LISTEN").unwrap_or_else(|_| "0.0.0.0:7700".into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;

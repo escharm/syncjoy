@@ -30,18 +30,32 @@ let relay = Relay::with_turn(TurnConfig {
 
 TURN 服务本身由部署层的 coturn 提供，SDK 不内嵌：把有状态的运维组件编译进宿主进程，UDP 端口与带宽管理反而复杂化。
 
+<a id="guard"></a>
+## 注册准入
+
+relay 面向公网，谁都能发 hello 冒充任意 peer_id 顶替旧连接。宿主用 `Relay::with_guard` 注入准入回调后，每个 hello 先过 guard 再入注册表，返回 false 的连接收到 `rejected { reason: registration denied }` 并被断开，不触发注册与上下线广播；不配 guard 时所有 hello 放行，行为与从前一致：
+
+```rust
+let relay = Relay::new().with_guard(|peer_id, token| match token {
+    Some(token) => check(peer_id, token),
+    None => false,
+});
+```
+
+guard 是纯同步判断，入参只有 hello 帧里的 peer_id 与可选 token；凭证的签发与验证属于使用方的业务上下文，SDK 不代劳。peer 侧凭据经 `Peer::builder().relay_token(...)` 配置，随 hello 帧发出（见 [peer-sdk.md](peer-sdk.md#connect)），不进拨号 URL，避免落入访问日志；被拒时 `connect_relay` 返回 `PeerError::Rejected`，携带 relay 给出的原因。
+
 ## 信令面做什么
 
 | 消息 | 方向 | 行为 |
 |---|---|---|
-| `hello { peer_id }` | peer → relay | 注册（同 id 顶替旧连接） |
+| `hello { peer_id, token? }` | peer → relay | 注册（同 id 顶替旧连接）；配置 guard 时先校验准入，不过则回 `rejected` 并断开 |
 | `ack` / `turn` | relay → peer | 注册回执、TURN 凭证 |
 | `offer` / `answer` / `ice` | peer → relay | 携带目标 peer id，relay 点对点路由 |
 | `offer_relay` / `answer_relay` / `ice_relay` | relay → peer | 路由结果，附来源 peer id |
 | `peer_online` / `peer_offline` | relay → peer | 上下线广播（不含当事 peer） |
-| `rejected { to }` | relay → peer | offer 目标不在线 |
+| `rejected { to }` | relay → peer | offer 目标不在线，或 hello 未过准入 |
 
-relay 不解读 SDP 与 ICE 内容，只按 peer id 转交；无鉴权、无准入：鉴权所需的业务上下文（谁认识谁、谁授权谁连谁）只存在于使用方，SDK 内置的授权点只能回放使用方自己注入的判断。
+relay 不解读 SDP 与 ICE 内容，只按 peer id 转交；无鉴权，准入是使用方注入的回调（见 [注册准入](#guard)），不配 guard 则全部放行。鉴权所需的业务上下文（谁认识谁、谁授权谁连谁）只存在于使用方，SDK 内置的授权点只能回放使用方自己注入的判断。
 
 ## 部署要点
 

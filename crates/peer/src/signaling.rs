@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use syncjoy_protocol::{decode, encode, PeerToRelay, RelayToPeer};
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 use crate::error::PeerError;
 use crate::peer::Peer;
@@ -23,6 +23,7 @@ pub(crate) async fn connect_relay(peer: &Peer, relay_url: &str) -> Result<RelayL
 
     let hello = encode(&PeerToRelay::Hello {
         peer_id: peer.id.clone(),
+        token: peer.relay_token.clone(),
     });
     socket_tx.send(hello).map_err(|_| PeerError::Closed)?;
     expect_ack(&mut socket_rx).await?;
@@ -52,6 +53,7 @@ async fn expect_ack(socket_rx: &mut UnboundedReceiver<String>) -> Result<(), Pee
     while let Some(text) = socket_rx.recv().await {
         return match decode::<RelayToPeer>(&text)? {
             RelayToPeer::Ack => Ok(()),
+            RelayToPeer::Rejected { reason, .. } => Err(PeerError::Rejected(reason)),
             other => Err(PeerError::Rejected(format!("{other:?}"))),
         };
     }
@@ -59,7 +61,7 @@ async fn expect_ack(socket_rx: &mut UnboundedReceiver<String>) -> Result<(), Pee
 }
 
 async fn pump(
-    socket_tx: UnboundedSender<String>,
+    socket_tx: transport::SignalingSender,
     mut socket_rx: UnboundedReceiver<String>,
     core: Arc<Core>,
     mut commands: UnboundedReceiver<Command>,
@@ -100,7 +102,7 @@ async fn pump(
 
 async fn handle_signal(
     core: &Arc<Core>,
-    socket_tx: &UnboundedSender<String>,
+    socket_tx: &transport::SignalingSender,
     msg: RelayToPeer,
 ) -> bool {
     match msg {
@@ -119,9 +121,12 @@ async fn handle_signal(
         RelayToPeer::Ping => {
             return socket_tx.send(encode(&PeerToRelay::Pong)).is_ok();
         }
-        RelayToPeer::PeerOnline { .. } => {}
+        RelayToPeer::PeerOnline { peer_id } => {
+            let _ = core.events.send(Event::PeerOnline { peer_id });
+        }
         RelayToPeer::PeerOffline { peer_id } => {
             rtc::teardown(core, &peer_id);
+            let _ = core.events.send(Event::PeerOffline { peer_id });
         }
         RelayToPeer::OfferRelay { from, sdp } => {
             rtc::answer(core, &from, &sdp).await;

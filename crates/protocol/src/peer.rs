@@ -4,7 +4,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PeerToRelay {
-    Hello { peer_id: PeerId },
+    Hello {
+        peer_id: PeerId,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        token: Option<String>,
+    },
     Offer { to: PeerId, sdp: String },
     Answer { to: PeerId, sdp: String },
     Ice { to: PeerId, candidate: IceCandidate },

@@ -15,6 +15,8 @@ use tokio::sync::oneshot;
 
 pub enum Event {
     Channel(PeerLink),
+    PeerOnline { peer_id: PeerId },
+    PeerOffline { peer_id: PeerId },
 }
 
 #[async_trait]

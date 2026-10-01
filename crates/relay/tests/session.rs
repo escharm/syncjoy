@@ -23,6 +23,7 @@ fn spawn_session(relay: &Relay) -> Endpoint {
 fn hello(id: &str) -> String {
     encode(&PeerToRelay::Hello {
         peer_id: PeerId::new(id),
+        token: None,
     })
 }
 

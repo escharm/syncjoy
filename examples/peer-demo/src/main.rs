@@ -32,6 +32,10 @@ struct Args {
     /// Relay websocket url.
     #[arg(long, env = "SYNCJOY_RELAY", default_value = "ws://127.0.0.1:7700")]
     relay: String,
+
+    /// Credential presented to a relay that runs a registration guard.
+    #[arg(long, env = "SYNCJOY_PEER_TOKEN")]
+    token: Option<String>,
 }
 
 struct RejectAll;
@@ -72,7 +76,11 @@ fn panic_record(info: &std::panic::PanicHookInfo<'_>) -> String {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     install_panic_logger();
     let args = Args::parse();
-    let peer = Peer::builder().id(args.id).build();
+    let mut builder = Peer::builder().id(args.id);
+    if let Some(token) = args.token {
+        builder = builder.relay_token(token);
+    }
+    let peer = builder.build();
     let mut relay_link = peer.connect_relay(&args.relay).await?;
     let id = peer.id().clone();
     let to = PeerId::new(args.to);
@@ -88,18 +96,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let consumer_screen = Arc::clone(&screen);
     let consumer_slot = Arc::clone(&peer_link_slot);
     tokio::spawn(async move {
-        while let Some(PeerEvent::Channel(mut incoming)) = relay_link.next_event().await {
-            incoming
-                .on_msg(Receiver {
-                    screen: Arc::clone(&consumer_screen),
-                })
-                .await;
-            incoming.on_close(CloseNotice {
-                screen: Arc::clone(&consumer_screen),
-            });
-            consumer_screen.set_connected(true);
-            consumer_screen.log(format!("channel open: {}", incoming.peer()));
-            *consumer_slot.lock().await = Some(incoming);
+        while let Some(event) = relay_link.next_event().await {
+            match event {
+                PeerEvent::Channel(mut incoming) => {
+                    incoming
+                        .on_msg(Receiver {
+                            screen: Arc::clone(&consumer_screen),
+                        })
+                        .await;
+                    incoming.on_close(CloseNotice {
+                        screen: Arc::clone(&consumer_screen),
+                    });
+                    consumer_screen.set_connected(true);
+                    consumer_screen.log(format!("channel open: {}", incoming.peer()));
+                    *consumer_slot.lock().await = Some(incoming);
+                }
+                PeerEvent::PeerOnline { peer_id } => {
+                    consumer_screen.log(format!("peer online: {peer_id}"));
+                }
+                PeerEvent::PeerOffline { peer_id } => {
+                    consumer_screen.log(format!("peer offline: {peer_id}"));
+                }
+            }
         }
     });
 

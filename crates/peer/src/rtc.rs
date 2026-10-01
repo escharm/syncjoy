@@ -198,25 +198,26 @@ fn wire_data_channel(
 
     let core_for_msg = Arc::clone(core);
     let peer_for_msg = peer.clone();
-    let msg_dc = inner.dc.clone();
-    msg_dc.on_message(Box::new(move |bytes| {
+    inner.dc.on_message(Box::new(move |bytes| {
         dispatch(&core_for_msg, &peer_for_msg, bytes);
     }));
 
     let core_for_open = Arc::clone(core);
     let peer_for_open = peer.clone();
-    let open_inner = Arc::clone(&inner);
-    let open_dc = inner.dc.clone();
-    open_dc.on_open(Box::new(move || {
-        let handed = Arc::clone(&open_inner);
-        fire_open(&core_for_open, &peer_for_open, handed, action);
+    let open_inner = Arc::downgrade(&inner);
+    inner.dc.on_open(Box::new(move || {
+        if let Some(inner) = open_inner.upgrade() {
+            fire_open(&core_for_open, &peer_for_open, inner, action);
+        }
     }));
 
     let peer_for_close = peer.clone();
-    let close_dc = inner.dc.clone();
+    let close_inner = Arc::downgrade(&inner);
     let close_core = Arc::clone(core);
     inner.dc.on_close(Box::new(move || {
-        close_core.retire_channel(&peer_for_close, &close_dc);
+        if let Some(inner) = close_inner.upgrade() {
+            close_core.retire_channel(&peer_for_close, &inner.dc);
+        }
     }));
 
     Some(inner)
