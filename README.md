@@ -6,7 +6,7 @@
 
 | crate | 部署位置 | 职责 |
 |---|---|---|
-| `syncjoy-relay` | 公网主机 | 信令与连接协助：注册表与 SDP/ICE 路由、上下线广播、来向 `decline` 回击、可选 TURN 凭证签发、可选注册准入（guard）；零框架依赖，宿主自选 HTTP 库（axum 接线参考 `examples/relay-host`）；无头，不转发应用数据 |
+| `syncjoy-relay` | 公网主机 | 信令与连接协助：注册表与 SDP/ICE 路由、来向 `decline` 回击、可选 TURN 凭证签发、可选注册准入（guard）；零框架依赖，宿主自选 HTTP 库（axum 接线参考 `examples/relay-host`）；无头，不转发应用数据 |
 | `syncjoy-peer` | 任意参与方 | 对等节点 SDK：`connect_relay(relay)` 注册自己，`connect_peer(to)` 得到与该 peer 的 `PeerLink`（WebRTC 直连，`send`/`recv`/`on_msg`/`on_close`）；`on_incoming` 裁决来向（`peer-demo` 以 `--reject-incoming` 切换固定拒绝，可交叉测试）；ICE 三层配置（builder 预置、relay 下发、单次拨号追加）；native 与 wasm 双传输层 |
 | `syncjoy-protocol` | 内部依赖 | relay 与 peer 共用的信令消息类型与编解码（v6） |
 
@@ -40,6 +40,7 @@ cargo check --workspace --all-targets
 cargo test --workspace
 cargo xtask features        # feature 矩阵：默认构建、relay 零框架断言、peer wasm、互斥护栏
 cargo xtask e2e             # 多进程 e2e：pty 驱动 relay-host + 双 peer-demo TUI 往返
+cargo xtask verify          # 信令面行为回归：路由失败回执、连接超时、断链事件与数据面存活
 ```
 
 ## 目录结构

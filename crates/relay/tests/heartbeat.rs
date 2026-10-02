@@ -11,13 +11,13 @@ struct Endpoint {
 
 struct Responder {
     to_relay: UnboundedSender<String>,
-    events: UnboundedReceiver<RelayToPeer>,
 }
 
 fn short_heartbeat() -> HeartbeatConfig {
     HeartbeatConfig {
         interval: Duration::from_millis(30),
         timeout: Duration::from_millis(60),
+        hello_timeout: Duration::from_secs(5),
     }
 }
 
@@ -35,25 +35,17 @@ fn spawn_session(relay: &Relay) -> Endpoint {
 fn spawn_responder(relay: &Relay, id: &str) -> Responder {
     let endpoint = spawn_session(relay);
     endpoint.to_relay.send(hello(id)).unwrap();
-    let (events, event_rx) = unbounded_channel::<RelayToPeer>();
     let mut from_relay = endpoint.from_relay;
     let reply = endpoint.to_relay.clone();
     tokio::spawn(async move {
         while let Some(text) = from_relay.recv().await {
-            match decode::<RelayToPeer>(&text) {
-                Ok(RelayToPeer::Ping) => {
-                    let _ = reply.send(encode(&PeerToRelay::Pong));
-                }
-                Ok(msg) => {
-                    let _ = events.send(msg);
-                }
-                Err(_) => {}
+            if matches!(decode::<RelayToPeer>(&text), Ok(RelayToPeer::Ping)) {
+                let _ = reply.send(encode(&PeerToRelay::Pong));
             }
         }
     });
     Responder {
         to_relay: endpoint.to_relay,
-        events: event_rx,
     }
 }
 
@@ -92,18 +84,16 @@ async fn half_open_peer_is_evicted_and_its_id_can_reregister() {
     until(&mut ghost.from_relay, |f| matches!(f, RelayToPeer::Ack)).await;
     until(&mut ghost.from_relay, |f| matches!(f, RelayToPeer::Ping)).await;
 
-    let mut watcher = spawn_responder(&relay, "watcher");
+    let watcher = spawn_responder(&relay, "watcher");
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            match watcher.events.recv().await {
-                Some(RelayToPeer::PeerOffline { peer_id })
-                    if peer_id == PeerId::new("ghost") =>
-                {
-                    return;
-                }
-                Some(_) => {}
-                None => panic!("watcher session ended before the eviction"),
+            if !relay
+                .registry()
+                .route(&PeerId::new("ghost"), RelayToPeer::Ack)
+            {
+                return;
             }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await

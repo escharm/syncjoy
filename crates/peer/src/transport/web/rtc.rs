@@ -38,6 +38,10 @@ pub(crate) async fn timeout<F: Future>(duration: Duration, future: F) -> Result<
     }
 }
 
+pub(crate) async fn sleep(duration: Duration) {
+    gloo_timers::future::sleep(duration).await
+}
+
 pub(crate) struct PeerConnection {
     inner: RtcPeerConnection,
     keepalive: Keepalive,
@@ -190,6 +194,7 @@ impl PeerConnection {
 
     pub(crate) async fn add_ice_candidate(&self, candidate: &IceCandidate) {
         let init = RtcIceCandidateInit::new(&candidate.candidate);
+        init.set_sdp_mid(candidate.sdp_mid.as_deref());
         init.set_sdp_m_line_index(candidate.sdp_mline_index);
         let _ = JsFuture::from(
             self.inner

@@ -17,11 +17,12 @@ pub struct PeerLink {
 
 pub(crate) struct PeerLinkInner {
     pub(crate) peer: PeerId,
+    pub(crate) generation: u64,
     pub(crate) announced: AtomicBool,
     pub(crate) dc: DataChannel,
     pub(crate) link: LinkHandle,
     pub(crate) closed: watch::Sender<bool>,
-    close_handler: std::sync::Mutex<Option<Arc<dyn CloseHandler>>>,
+    close_slot: Arc<std::sync::Mutex<Option<Arc<dyn CloseHandler>>>>,
     close_watched: AtomicBool,
     commands: UnboundedSender<Command>,
     inbound: Mutex<Option<UnboundedReceiver<Bytes>>>,
@@ -29,15 +30,22 @@ pub(crate) struct PeerLinkInner {
 
 impl Drop for PeerLinkInner {
     fn drop(&mut self) {
-        let _ = self.commands.send(Command::Close {
-            peer: self.peer.clone(),
-        });
+        let _ = self.closed.send(true);
+        if self.link.core.link_alive.load(Ordering::Relaxed) {
+            let _ = self.commands.send(Command::Close {
+                peer: self.peer.clone(),
+                generation: self.generation,
+            });
+        } else {
+            self.link.core.teardown_if(&self.peer, self.generation);
+        }
     }
 }
 
 impl PeerLinkInner {
     pub(crate) fn new(
         peer: PeerId,
+        generation: u64,
         dc: DataChannel,
         link: LinkHandle,
         commands: UnboundedSender<Command>,
@@ -46,11 +54,12 @@ impl PeerLinkInner {
         let (closed, _) = watch::channel(false);
         Self {
             peer,
+            generation,
             announced: AtomicBool::new(false),
             dc,
             link,
             closed,
-            close_handler: std::sync::Mutex::new(None),
+            close_slot: Arc::new(std::sync::Mutex::new(None)),
             close_watched: AtomicBool::new(false),
             commands,
             inbound: Mutex::new(Some(inbound)),
@@ -97,9 +106,17 @@ impl PeerLink {
     }
 
     pub fn close(&self) {
-        let _ = self.inner.commands.send(Command::Close {
-            peer: self.inner.peer.clone(),
-        });
+        if self.inner.link.core.link_alive.load(Ordering::Relaxed) {
+            let _ = self.inner.commands.send(Command::Close {
+                peer: self.inner.peer.clone(),
+                generation: self.inner.generation,
+            });
+        } else {
+            self.inner
+                .link
+                .core
+                .teardown_if(&self.inner.peer, self.inner.generation);
+        }
     }
 
     /// Invoke the registered handler once this connection closes, whatever the
@@ -107,12 +124,12 @@ impl PeerLink {
     /// handle dropping. One handler slot per link: re-registering replaces,
     /// the callback fires at most once.
     pub fn on_close(&self, handler: impl CloseHandler) {
-        *self.inner.close_handler.lock().unwrap() = Some(Arc::new(handler));
+        *self.inner.close_slot.lock().unwrap() = Some(Arc::new(handler));
         if self.inner.close_watched.swap(true, Ordering::Relaxed) {
             return;
         }
         let mut closed = self.inner.closed.subscribe();
-        let inner = Arc::downgrade(&self.inner);
+        let slot = Arc::clone(&self.inner.close_slot);
         let link = self.inner.link.clone();
         let peer = self.inner.peer.clone();
         transport::spawn(async move {
@@ -121,9 +138,7 @@ impl PeerLink {
                     break;
                 }
             }
-            let handler = inner
-                .upgrade()
-                .and_then(|inner| inner.close_handler.lock().unwrap().clone());
+            let handler = slot.lock().unwrap().clone();
             if let Some(handler) = handler {
                 handler.on_close(link, peer).await;
             }

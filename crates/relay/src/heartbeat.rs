@@ -7,6 +7,7 @@ use tokio::time::{sleep_until, Instant};
 pub struct HeartbeatConfig {
     pub interval: Duration,
     pub timeout: Duration,
+    pub hello_timeout: Duration,
 }
 
 impl Default for HeartbeatConfig {
@@ -14,6 +15,7 @@ impl Default for HeartbeatConfig {
         Self {
             interval: Duration::from_secs(30),
             timeout: Duration::from_secs(10),
+            hello_timeout: Duration::from_secs(10),
         }
     }
 }

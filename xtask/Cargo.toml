@@ -8,6 +8,8 @@ publish = false
 [dependencies]
 clap = { workspace = true }
 portable-pty = "0.8"
+syncjoy-protocol = { workspace = true }
+tungstenite = "0.24"
 
 [lints]
 workspace = true

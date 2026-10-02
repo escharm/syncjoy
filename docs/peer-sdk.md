@@ -13,31 +13,34 @@ let mut relay_link = peer.connect_relay("ws://relay:7700").await?;      // 信�
 let mut peer_link = relay_link.connect_peer("bob").await?;              // 与 bob 的直连
 ```
 
-来向连接通过 `relay_link.next_event().await` 取得（`Event::Channel`，来向 DataChannel 打开时触发）。每对 peer 之间一条 DataChannel：`connect_peer` 对已连接的 peer 直接返回现有连接的句柄，不重复拨号；内置 15 秒拨号超时，穿透打不通时返回 `Timeout`。
+来向连接通过 `relay_link.next_event().await` 取得（`Event::Channel`，来向 DataChannel 打开时触发）。每对 peer 之间一条 DataChannel：`connect_peer` 对已连接的 peer 直接返回现有连接的句柄，不重复拨号；并发的 `connect_peer` 合流到同一次在途拨号，共享其结果（一起成功拿到同一条连接，或一起失败，含对端拒绝）；内置 15 秒拨号超时，穿透打不通时返回 `Timeout`。
+
+relay 地址按 scheme 自选明文或加密：`ws://` 走明文，`wss://` 走 TLS（rustls，内置 webpki 根证书），公网部署应使用 `wss://`。peer id 限可打印 ASCII（不含空格）且不超过 128 字节，超限的 id 会被对端以协议错误拒绝。`connect_relay` 内置 10 秒握手与应答超时：relay 黑洞时返回 `Connect("relay handshake timed out")`，不会无限期挂起。
 
 relay 配置了注册准入时（见 [relay-sdk.md](relay-sdk.md#guard)），用 `relay_token(...)` 提供随 hello 帧发出的凭据；凭据只进信令通道，不进拨号 URL。relay 拒绝准入时 `connect_relay` 返回 `PeerError::Rejected`，携带 relay 给出的原因。
 
 <a id="presence"></a>
 
-## 在线状态
+## 在线状态与信令断链
 
-relay 在 peer 注册与退出时向其余 peer 广播，SDK 转为 `Event::PeerOnline { peer_id }` 与 `Event::PeerOffline { peer_id }`，与来向连接同从 `relay_link.next_event()` 取得：
+没有在线广播：连接层不维护也不分发在线名单，会话成员属于使用方的业务上下文。在线与否由拨号探测呈现：目标不在线时 `connect_peer` 立即返回 `Rejected("peer X is not online")`，不产生等待。
+
+信令断链可感知，事件与来向连接同从 `relay_link.next_event()` 取得：
 
 ```rust
 while let Some(event) = relay_link.next_event().await {
     match event {
         Event::Channel(peer_link) => { /* 来向连接，见上节 */ }
-        Event::PeerOnline { peer_id } => { /* 可向其 connect_peer */ }
-        Event::PeerOffline { peer_id } => { /* 撤下该 peer 的在线状态 */ }
+        Event::RelayClosed { reason } => { /* 信令断开，携带死因，见下 */ }
     }
 }
 ```
 
 边界：
 
-- 广播不含当事人：自己不会收到自己的上下线；
-- 没有初始在线列表：`connect_relay` 时已在场的 peer 不产生事件，此后各自的上下线才可见；
-- 收到 `PeerOffline` 时，本端与该 peer 的连接已被 SDK 拆除，`on_close` 回调照常触发；
+- 对端死亡由数据面自身判定，与对端的信令连接无关：优雅退出走 SCTP 关闭立即触发 `on_close`，硬死亡由 ICE consent（RFC 7675）在约 30 秒内判死，同样触发 `on_close`；
+- 信令断开时发出 `RelayClosed { reason }`（死因：socket 关闭、坏帧、发送失败），同时所有在途拨号立即以 `Rejected("relay link closed: …")` 失败；既有 DataChannel 不受影响继续直连；SDK 不自动重连，是否重连由使用方按原因决定（对齐低层 WebSocket 的边界），重连需重新 `connect_relay`；
+- 信令用完可主动关闭：`relay_link.close()` 断开与 relay 的连接，既有直连全部保留、继续收发，在途拨号立即失败，新拨号立即返回 `Closed`；主动关闭不发 `RelayClosed`（使用方知情），重新入网需要新的 `connect_relay`（新的链接上下文，与存量直连互不感知）；
 - 事件只投递给 `next_event` 的消费者，不消费则积压（无界），见 [issues/unbounded-queues.md](../issues/unbounded-queues.md)。
 
 ## ICE 配置（STUN/TURN）
@@ -52,7 +55,8 @@ let peer = Peer::builder()
     .ice_server(IceServer::turn("turn:turn.example.com:3478", "user", "secret"))
     .build();
 
-// ② relay 下发：relay 配置了 TURN 时在注册后自动签发限时凭证并追加（见 relay-sdk.md）
+// ② relay 下发：relay 配置了 TURN 时在注册后自动签发限时凭证、到期前重签（见 relay-sdk.md），
+//    拨号时取最新一份并入
 
 // ③ 单次拨号追加：拨难达对端时临时补充，不持久化
 let peer_link = relay_link
@@ -71,7 +75,7 @@ let peer_link = relay_link
 
 ## 连接生命周期
 
-句柄可克隆共享同一连接。末位句柄被 drop、或任一句柄调用 `close`，连接即回收：本端表项清除、对端通道关闭。无句柄时可用 `relay_link.close_peer(to)` 显式拆除。`close` 与 drop 之后 `recv` 返回 `None`。
+句柄可克隆共享同一连接。末位句柄被 drop、或任一句柄调用 `close`，连接即回收：本端表项清除、对端通道关闭。连接带代次：旧连接残留的句柄在重拨之后才 drop 或 `close`，只作用于自己那一代，不会拆掉重建的新连接。无句柄时可用 `relay_link.close_peer(to)` 无条件拆除该 peer 的当前连接。`close` 与 drop 之后 `recv` 返回 `None`。
 
 关闭可被感知：`peer_link.on_close(handler)` 在连接关闭时回调一次，远端关闭、本地 `close`/`close_peer`、对端下线、末位句柄 drop 都会触发，回调签名与 `MsgHandler` 同构（`on_close(&self, link, peer)`）。单槽语义：重复注册以最后一次为准，回调至多触发一次。
 

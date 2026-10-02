@@ -25,6 +25,10 @@ pub(crate) async fn timeout<F: Future>(duration: Duration, future: F) -> Result<
     tokio::time::timeout(duration, future).await.map_err(|_| ())
 }
 
+pub(crate) async fn sleep(duration: Duration) {
+    tokio::time::sleep(duration).await
+}
+
 pub(crate) struct PeerConnection(Arc<RTCPeerConnection>);
 
 pub(crate) struct DataChannel(Arc<RTCDataChannel>);

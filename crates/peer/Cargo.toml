@@ -31,9 +31,11 @@ gloo-timers = { workspace = true, optional = true }
 
 [dev-dependencies]
 syncjoy-relay = { workspace = true }
+async-trait = { workspace = true }
 axum = { workspace = true }
 futures-util = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "time", "macros"] }
+tokio-tungstenite = { workspace = true }
 
 [lints]
 workspace = true

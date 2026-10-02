@@ -71,7 +71,10 @@ async fn upgrade(
     ws: axum::extract::WebSocketUpgrade,
     axum::extract::State(relay): axum::extract::State<Relay>,
 ) -> impl axum::response::IntoResponse {
-    ws.on_upgrade(move |socket| bridge(socket, relay))
+    ws.max_message_size(64 * 1024)
+        .max_frame_size(64 * 1024)
+        .max_write_buffer_size(1024 * 1024)
+        .on_upgrade(move |socket| bridge(socket, relay))
 }
 
 async fn bridge(socket: axum::extract::ws::WebSocket, relay: Relay) {

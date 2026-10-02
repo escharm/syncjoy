@@ -60,13 +60,4 @@ impl PeerRegistry {
             None => false,
         }
     }
-
-    pub fn broadcast(&self, msg: RelayToPeer, except: &PeerId) {
-        let inner = self.inner.lock().unwrap();
-        for (peer, slot) in &inner.peers {
-            if peer != except {
-                let _ = slot.sender.send(msg.clone());
-            }
-        }
-    }
 }

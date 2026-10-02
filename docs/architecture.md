@@ -35,7 +35,6 @@ sequenceDiagram
     A->>R: hello(alice)
     R-->>A: ack
     B->>R: hello(bob)
-    R-->>A: peer_online(bob)
     A->>R: offer(to=bob)
     R->>B: offer_relay(from=alice)
     B->>R: answer(to=alice)
@@ -57,9 +56,9 @@ relay 是无头组件，不做任何准入判断：能否通信由使用方决�
 以下都是当前实现的既定行为，不是缺陷，变更需走 decisions 留档：
 
 - 来向 offer 默认自动应答；宿主注册 `on_incoming` 后可逐个裁决，拒绝走 `decline` 帧回击发起方（协议 v6）；
-- `connect_peer` 指向的 peer 不在线时立即 `rejected`，SDK 层不缓存意图；
+- `connect_peer` 指向的 peer 不在线时立即 `rejected`，SDK 层不缓存意图；这也是在线与否的唯一呈现，没有在线广播（决策留档见 [decisions/no-presence-broadcast.md](../decisions/no-presence-broadcast.md)）；
 - 同一 peer id 重复注册会顶替旧连接（代数校验保证旧连接退出时不误删新注册），见 [issues/ghost-session-keepalive.md](../issues/ghost-session-keepalive.md)；
-- peer 的信令连接断开时，relay 广播 `peer_offline`，对端据此拆除 DataChannel；SDK 不做自动重连（重连涉及与使用方业务状态的协调，单方面重连会造成状态错位），重连后需重新协商；
+- DataChannel 的生死由数据面自身判定，与对端的信令连接无关：对端优雅退出走 SCTP 关闭立即触发 `on_close`，硬死亡由 ICE consent（RFC 7675）约 30 秒内判死；SDK 不做自动重连（重连决策留档见 [decisions/link-close-notify-no-reconnect.md](../decisions/link-close-notify-no-reconnect.md)），重连后需重新协商；
 - 每对 peer 之间一条 DataChannel，`connect_peer` 对已连接的 peer 直接返回现有连接的句柄，不重复拨号；
 - 连接回收跟随句柄生命周期：末位 `PeerLink` 被 drop 或调用 `close` 即拆除连接（`close_peer(to)` 可无句柄拆除），`on_close` 回调感知关闭且至多触发一次；
 - 消息内容对 syncjoy 不透明：DataChannel 载荷是原始字节，编码由使用方自行解析；信令面保持带版本号的 JSON 文本帧。

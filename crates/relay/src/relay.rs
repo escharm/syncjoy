@@ -58,43 +58,53 @@ impl Relay {
                         sdp,
                     },
                 ) {
-                    self.registry.route(
-                        from,
-                        RelayToPeer::Rejected {
-                            to: to.clone(),
-                            reason: format!("peer {to} is not online"),
-                        },
-                    );
+                    self.reject(from, &to);
                 }
             }
             PeerToRelay::Answer { to, sdp } => {
-                self.registry.route(
+                if !self.registry.route(
                     &to,
                     RelayToPeer::AnswerRelay {
                         from: from.clone(),
                         sdp,
                     },
-                );
+                ) {
+                    self.reject(from, &to);
+                }
             }
             PeerToRelay::Ice { to, candidate } => {
-                self.registry.route(
+                if !self.registry.route(
                     &to,
                     RelayToPeer::IceRelay {
                         from: from.clone(),
                         candidate,
                     },
-                );
+                ) {
+                    self.reject(from, &to);
+                }
             }
             PeerToRelay::Decline { to } => {
-                self.registry.route(
+                if !self.registry.route(
                     &to,
                     RelayToPeer::Rejected {
                         to: from.clone(),
                         reason: "declined by peer".to_owned(),
                     },
-                );
+                ) {
+                    self.reject(from, &to);
+                }
             }
             PeerToRelay::Pong => {}
         }
+    }
+
+    fn reject(&self, from: &PeerId, to: &PeerId) {
+        self.registry.route(
+            from,
+            RelayToPeer::Rejected {
+                to: to.clone(),
+                reason: format!("peer {to} is not online"),
+            },
+        );
     }
 }

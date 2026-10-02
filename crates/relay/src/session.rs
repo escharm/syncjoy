@@ -1,11 +1,13 @@
 use syncjoy_protocol::{decode, encode, PeerToRelay, RelayToPeer};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::time::interval_at;
 
 use crate::heartbeat::{Heartbeat, Probe};
 use crate::registry::RegisteredPeer;
 use crate::relay::Relay;
 use crate::turn::generate_credentials;
 use std::sync::Arc;
+use std::time::Duration;
 
 const TURN_TTL_SECS: u64 = 3600;
 const REGISTRATION_DENIED: &str = "registration denied";
@@ -19,7 +21,9 @@ pub async fn run(
     outbound: UnboundedSender<String>,
 ) {
     let registry = Arc::clone(&relay.registry);
-    let Some(PeerToRelay::Hello { peer_id, token }) = read_hello(&mut inbound).await else {
+    let Some(PeerToRelay::Hello { peer_id, token }) =
+        read_hello(&mut inbound, relay.heartbeat.hello_timeout).await
+    else {
         return;
     };
 
@@ -49,15 +53,14 @@ pub async fn run(
             return;
         }
     }
-    registry.broadcast(
-        RelayToPeer::PeerOnline {
-            peer_id: peer_id.clone(),
-        },
-        &peer_id,
-    );
     tracing::info!(%peer_id, "peer online");
 
     let heartbeat = Heartbeat::new(relay.heartbeat.clone());
+    let turn = relay.turn.as_ref();
+    let mut turn_timer = turn.map(|_| {
+        let refresh = turn_refresh(TURN_TTL_SECS);
+        interval_at(tokio::time::Instant::now() + refresh, refresh)
+    });
     loop {
         tokio::select! {
             text = inbound.recv() => match text {
@@ -91,6 +94,17 @@ pub async fn run(
                     break;
                 }
             },
+            _ = async {
+                match turn_timer.as_mut() {
+                    Some(timer) => timer.tick().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let Some(turn) = turn else { continue };
+                if !send(&outbound, &generate_credentials(turn, &peer_id.0, TURN_TTL_SECS)) {
+                    break;
+                }
+            }
         }
     }
 
@@ -99,23 +113,23 @@ pub async fn run(
 }
 
 fn unregister(relay: &Relay, peer_id: &syncjoy_protocol::PeerId, generation: u64) {
-    if relay.registry.unregister(peer_id, generation) {
-        relay.registry.broadcast(
-            RelayToPeer::PeerOffline {
-                peer_id: peer_id.clone(),
-            },
-            peer_id,
-        );
-    }
+    relay.registry.unregister(peer_id, generation);
 }
 
-async fn read_hello(inbound: &mut UnboundedReceiver<String>) -> Option<PeerToRelay> {
-    while let Some(text) = inbound.recv().await {
-        return decode::<PeerToRelay>(&text)
-            .ok()
-            .filter(|msg| matches!(msg, PeerToRelay::Hello { .. }));
-    }
-    None
+async fn read_hello(
+    inbound: &mut UnboundedReceiver<String>,
+    hello_timeout: Duration,
+) -> Option<PeerToRelay> {
+    let text = tokio::time::timeout(hello_timeout, inbound.recv())
+        .await
+        .ok()??;
+    decode::<PeerToRelay>(&text)
+        .ok()
+        .filter(|msg| matches!(msg, PeerToRelay::Hello { .. }))
+}
+
+fn turn_refresh(ttl_secs: u64) -> Duration {
+    Duration::from_secs(ttl_secs / 2)
 }
 
 fn send(outbound: &UnboundedSender<String>, msg: &RelayToPeer) -> bool {

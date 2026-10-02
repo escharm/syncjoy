@@ -60,12 +60,6 @@ async fn handshake_routes_offer_and_answer() {
     bob.to_relay.send(hello("bob")).unwrap();
     let frame = until(&mut bob.from_relay, |f| matches!(f, RelayToPeer::Ack)).await;
     assert!(matches!(frame, RelayToPeer::Ack));
-    let frame = until(
-        &mut alice.from_relay,
-        |f| matches!(f, RelayToPeer::PeerOnline { ref peer_id } if *peer_id == PeerId::new("bob")),
-    )
-    .await;
-    assert!(matches!(frame, RelayToPeer::PeerOnline { .. }));
 
     alice
         .to_relay
@@ -127,25 +121,44 @@ async fn offer_to_offline_peer_is_rejected() {
 }
 
 #[tokio::test]
-async fn disconnect_broadcasts_offline() {
+async fn answer_ice_and_decline_to_offline_peers_are_rejected() {
     let relay = Relay::new();
     let mut alice = spawn_session(&relay);
-    let mut bob = spawn_session(&relay);
 
     alice.to_relay.send(hello("alice")).unwrap();
     until(&mut alice.from_relay, |f| matches!(f, RelayToPeer::Ack)).await;
-    bob.to_relay.send(hello("bob")).unwrap();
-    until(&mut bob.from_relay, |f| matches!(f, RelayToPeer::Ack)).await;
 
-    drop(alice);
-    let frame = until(&mut bob.from_relay, |f| {
-        matches!(f, RelayToPeer::PeerOffline { .. })
-    })
-    .await;
-    assert!(matches!(
-        frame,
-        RelayToPeer::PeerOffline { ref peer_id } if *peer_id == PeerId::new("alice")
-    ));
+    for frame in [
+        encode(&PeerToRelay::Answer {
+            to: PeerId::new("ghost"),
+            sdp: String::new(),
+        }),
+        encode(&PeerToRelay::Ice {
+            to: PeerId::new("ghost"),
+            candidate: syncjoy_protocol::IceCandidate {
+                candidate: String::new(),
+                sdp_mid: None,
+                sdp_mline_index: None,
+            },
+        }),
+        encode(&PeerToRelay::Decline {
+            to: PeerId::new("ghost"),
+        }),
+    ] {
+        alice.to_relay.send(frame).unwrap();
+        let rejected = until(&mut alice.from_relay, |f| {
+            matches!(f, RelayToPeer::Rejected { .. })
+        })
+        .await;
+        assert!(
+            matches!(
+                rejected,
+                RelayToPeer::Rejected { ref to, ref reason }
+                    if *to == PeerId::new("ghost") && reason.contains("not online")
+            ),
+            "routing failure must notify the sender, got {rejected:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -194,4 +207,22 @@ async fn turn_credentials_follow_the_ack() {
         frame,
         RelayToPeer::Turn { ref urls, .. } if urls == &vec!["turn:turn.example.com:3478".to_owned()]
     ));
+}
+
+#[tokio::test]
+async fn silent_connection_is_dropped_after_hello_timeout() {
+    let relay = Relay::new().with_heartbeat(syncjoy_relay::HeartbeatConfig {
+        interval: Duration::from_secs(30),
+        timeout: Duration::from_secs(10),
+        hello_timeout: Duration::from_millis(100),
+    });
+    let (to_relay, inbound_rx) = unbounded_channel::<String>();
+    let (outbound_tx, mut from_relay) = unbounded_channel::<String>();
+
+    tokio::time::timeout(Duration::from_secs(2), session::run(relay, inbound_rx, outbound_tx))
+        .await
+        .expect("silent session ends within hello timeout");
+
+    drop(to_relay);
+    assert!(from_relay.try_recv().is_err(), "no frame before hello");
 }

@@ -27,8 +27,8 @@ impl PeerBuilder {
     }
 
     /// Seed the ICE configuration with your own STUN/TURN servers.
-    /// Providing any replaces the built-in default STUN; servers pushed by the
-    /// relay (TURN credentials) are appended on top.
+    /// Providing any replaces the built-in default STUN; the relay's TURN
+    /// credentials (latest issued) are merged in at dial time.
     pub fn ice_server(mut self, server: IceServer) -> Self {
         self.ice_servers.push(server);
         self

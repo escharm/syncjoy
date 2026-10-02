@@ -95,6 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let consumer_screen = Arc::clone(&screen);
     let consumer_slot = Arc::clone(&peer_link_slot);
+    let consumer_to = to.clone();
     tokio::spawn(async move {
         while let Some(event) = relay_link.next_event().await {
             match event {
@@ -111,11 +112,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     consumer_screen.log(format!("channel open: {}", incoming.peer()));
                     *consumer_slot.lock().await = Some(incoming);
                 }
-                PeerEvent::PeerOnline { peer_id } => {
-                    consumer_screen.log(format!("peer online: {peer_id}"));
-                }
-                PeerEvent::PeerOffline { peer_id } => {
-                    consumer_screen.log(format!("peer offline: {peer_id}"));
+                PeerEvent::RelayClosed { reason } => {
+                    consumer_screen.log(format!(
+                        "relay link closed ({reason}): direct channel to {consumer_to} keeps working, restart to reconnect"
+                    ));
                 }
             }
         }

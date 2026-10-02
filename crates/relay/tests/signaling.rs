@@ -118,29 +118,25 @@ async fn offer_to_offline_peer_is_rejected() {
 }
 
 #[tokio::test]
-async fn peer_online_offline_broadcasts_to_others() {
+async fn registration_emits_no_presence_frames() {
     let relay_url = start_relay().await.expect("relay starts");
     let mut alice = dial(&relay_url, "alice").await.expect("alice registers");
 
     let bob = dial(&relay_url, "bob").await.expect("bob registers");
-    let online = next_matching(&mut alice, |msg| {
-        matches!(msg, RelayToPeer::PeerOnline { .. })
-    })
-    .await
-    .expect("alice sees bob coming online");
-    assert!(matches!(
-        online,
-        RelayToPeer::PeerOnline { ref peer_id } if peer_id == &PeerId::new("bob")
-    ));
-
     drop(bob);
-    let offline = next_matching(&mut alice, |msg| {
-        matches!(msg, RelayToPeer::PeerOffline { .. })
-    })
-    .await
-    .expect("alice sees bob going offline");
-    assert!(matches!(
-        offline,
-        RelayToPeer::PeerOffline { ref peer_id } if peer_id == &PeerId::new("bob")
-    ));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    while let Ok(Some(item)) = tokio::time::timeout_at(deadline, alice.next()).await {
+        if let Message::Text(text) = item.expect("ws stays open") {
+            let msg = decode::<RelayToPeer>(&text).expect("frame decodes");
+            assert!(
+                !matches!(
+                    msg,
+                    RelayToPeer::PeerOnline { .. } | RelayToPeer::PeerOffline { .. }
+                ),
+                "presence broadcast must stay removed, got {msg:?}"
+            );
+        }
+    }
 }

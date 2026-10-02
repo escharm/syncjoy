@@ -11,13 +11,13 @@ use syncjoy_relay::{session, Relay};
 session::run(relay, inbound_rx, outbound_tx).await;
 ```
 
-契约只有两条：WebSocket 升级端点挂在 `/syncjoy/v1/peer`（peer SDK 的固定拨入路径）；文本帧按原样进出通道。探活等自有端点由宿主路由自理。
+契约只有两条：WebSocket 升级端点挂在 `/syncjoy/v1/peer`（peer SDK 的固定拨入路径）；文本帧按原样进出通道。探活等自有端点由宿主路由自理。会话语义为 hello/ack 握手、SDP/ICE 路由、TURN 下发；没有在线广播（见 [decisions/no-presence-broadcast.md](../decisions/no-presence-broadcast.md)）。
 
 完整参考实现在 `examples/relay-host`（axum + healthz + TURN 环境变量），其他框架（actix、warp、裸 hyper）同构：收 ws、开通道对、spawn `session::run`。
 
 ## TURN 协助
 
-穿透失败的兜底由 TURN 承担。relay 配置了 coturn 的地址与 REST 密钥时，向每个注册成功的 peer 签发限时凭证（HMAC，默认 1 小时），peer 自动把它加进 ICE server：
+穿透失败的兜底由 TURN 承担。relay 配置了 coturn 的地址与 REST 密钥时，向每个注册成功的 peer 签发限时凭证（HMAC，默认 1 小时），peer 自动把它加进 ICE server。凭证每半 TTL（默认 30 分钟）重签一次，长会话的 peer 在拨号时始终拿到未过期的一份：
 
 ```rust
 use syncjoy_relay::{Relay, TurnConfig};
@@ -48,14 +48,15 @@ guard 是纯同步判断，入参只有 hello 帧里的 peer_id 与可选 token�
 
 | 消息 | 方向 | 行为 |
 |---|---|---|
-| `hello { peer_id, token? }` | peer → relay | 注册（同 id 顶替旧连接）；配置 guard 时先校验准入，不过则回 `rejected` 并断开 |
+| `hello { peer_id, token? }` | peer → relay | 注册（同 id 顶替旧连接）；配置 guard 时先校验准入，不过则回 `rejected` 并断开；peer_id 限可打印 ASCII、不超过 128 字节 |
 | `ack` / `turn` | relay → peer | 注册回执、TURN 凭证 |
 | `offer` / `answer` / `ice` | peer → relay | 携带目标 peer id，relay 点对点路由 |
 | `offer_relay` / `answer_relay` / `ice_relay` | relay → peer | 路由结果，附来源 peer id |
-| `peer_online` / `peer_offline` | relay → peer | 上下线广播（不含当事 peer） |
-| `rejected { to }` | relay → peer | offer 目标不在线，或 hello 未过准入 |
+| `rejected { to }` | relay → peer | 路由目标不在线（offer/answer/ice/decline），或 hello 未过准入 |
 
 relay 不解读 SDP 与 ICE 内容，只按 peer id 转交；无鉴权，准入是使用方注入的回调（见 [注册准入](#guard)），不配 guard 则全部放行。鉴权所需的业务上下文（谁认识谁、谁授权谁连谁）只存在于使用方，SDK 内置的授权点只能回放使用方自己注入的判断。
+
+连接的存活约束：首帧 `hello` 需在 `hello_timeout`（默认 10 秒）内到达，超时断开，不给未注册连接挂住的机会；注册后由心跳保活（默认 30 秒探测、10 秒超时未回 `pong` 即断开并广播下线）。间隔经 `Relay::with_heartbeat(HeartbeatConfig)` 可调。
 
 ## 部署要点
 

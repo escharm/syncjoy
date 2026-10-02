@@ -280,3 +280,138 @@ async fn on_close_fires_when_the_link_closes() {
         "the replaced handler must not fire"
     );
 }
+
+#[tokio::test]
+async fn on_close_fires_when_the_last_handle_drops() {
+    let relay_url = start_relay().await.expect("relay starts");
+    let _bob = start_echo_peer(&relay_url, "bob").await;
+
+    let alice = Peer::builder().id("alice").build();
+    let alice_relay_link = alice.connect_relay(&relay_url).await.expect("alice registers");
+
+    let peer_link: PeerLink = within_timeout(alice_relay_link.connect_peer("bob"))
+        .await
+        .expect("dial opens");
+    let (closed_tx, mut closed_rx) = unbounded_channel();
+    peer_link.on_close(CloseProbe { closed: closed_tx });
+
+    drop(peer_link);
+
+    let peer = within_timeout(closed_rx.recv())
+        .await
+        .expect("dropping the last handle fires on_close");
+    assert_eq!(peer, PeerId::new("bob"));
+}
+
+#[tokio::test]
+async fn concurrent_dials_coalesce_into_one_channel() {
+    let relay_url = start_relay().await.expect("relay starts");
+    let _bob = start_echo_peer(&relay_url, "bob").await;
+
+    let alice = Peer::builder().id("alice").build();
+    let alice_relay_link = alice.connect_relay(&relay_url).await.expect("alice registers");
+    let handle = alice_relay_link.handle();
+
+    let (first, second) =
+        within_timeout(async { tokio::join!(handle.connect_peer("bob"), handle.connect_peer("bob")) }).await;
+    let first: PeerLink = first.expect("first dial opens");
+    let mut second: PeerLink = second.expect("coalesced dial shares the same outcome");
+
+    first.send("via first").await.expect("send delivers");
+    let reply = within_timeout(second.recv()).await;
+    assert_eq!(
+        String::from_utf8_lossy(&reply.expect("both handles are the same live channel")),
+        "via first"
+    );
+}
+
+#[tokio::test]
+async fn decline_fails_every_coalesced_caller() {
+    let relay_url = start_relay().await.expect("relay starts");
+
+    let bob = Peer::builder().id("bob").build();
+    let bob_relay_link = bob.connect_relay(&relay_url).await.expect("bob registers");
+    bob_relay_link.on_incoming(Refuser);
+
+    let alice = Peer::builder().id("alice").build();
+    let alice_relay_link = alice.connect_relay(&relay_url).await.expect("alice registers");
+    let handle = alice_relay_link.handle();
+
+    let (first, second) =
+        within_timeout(async { tokio::join!(handle.connect_peer("bob"), handle.connect_peer("bob")) }).await;
+    for (label, outcome) in [("first", first), ("coalesced", second)] {
+        match outcome {
+            Err(PeerError::Rejected(reason)) => assert!(
+                reason.contains("declined"),
+                "{label} caller got {reason}"
+            ),
+            Err(other) => panic!("{label} caller got {other}"),
+            Ok(_) => panic!("{label} caller got a channel despite the decline"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn stale_handle_drop_keeps_the_rebuilt_connection() {
+    let relay_url = start_relay().await.expect("relay starts");
+    let _bob = start_echo_peer(&relay_url, "bob").await;
+
+    let alice = Peer::builder().id("alice").build();
+    let alice_relay_link = alice.connect_relay(&relay_url).await.expect("alice registers");
+
+    let mut stale: PeerLink = within_timeout(alice_relay_link.connect_peer("bob"))
+        .await
+        .expect("first dial opens");
+    alice_relay_link.close_peer("bob");
+    let drained = within_timeout(stale.recv()).await;
+    assert!(drained.is_none(), "close_peer tears the first connection down");
+
+    let mut fresh: PeerLink = within_timeout(alice_relay_link.connect_peer("bob"))
+        .await
+        .expect("redial opens a fresh connection");
+    drop(stale);
+
+    fresh.send("still alive").await.expect("send delivers");
+    let reply = within_timeout(fresh.recv()).await;
+    assert_eq!(
+        String::from_utf8_lossy(&reply.expect("the rebuilt connection survives the stale drop")),
+        "still alive"
+    );
+}
+
+#[tokio::test]
+async fn closing_the_relay_link_keeps_direct_channels_and_fails_new_dials() {
+    let relay_url = start_relay().await.expect("relay starts");
+    let _bob = start_echo_peer(&relay_url, "bob").await;
+
+    let alice = Peer::builder().id("alice").build();
+    let mut relay_link = alice.connect_relay(&relay_url).await.expect("alice registers");
+    let mut peer_link: PeerLink = within_timeout(relay_link.connect_peer("bob"))
+        .await
+        .expect("dial opens before the close");
+
+    relay_link.close();
+
+    peer_link
+        .send("after close")
+        .await
+        .expect("direct channels survive the signaling close");
+    let reply = within_timeout(peer_link.recv()).await;
+    assert_eq!(
+        String::from_utf8_lossy(&reply.expect("the echo still returns")),
+        "after close"
+    );
+
+    match tokio::time::timeout(Duration::from_secs(3), relay_link.connect_peer("carol")).await {
+        Ok(Err(PeerError::Closed)) => {}
+        Ok(Err(other)) => panic!("new dials must fail with Closed, got {other}"),
+        Ok(Ok(_)) => panic!("new dials must fail once the relay link is closed"),
+        Err(_) => panic!("new dials must fail immediately, not wait"),
+    }
+
+    let stray_event = tokio::time::timeout(Duration::from_millis(300), relay_link.next_event()).await;
+    assert!(
+        stray_event.is_err(),
+        "a deliberate close must not emit RelayClosed"
+    );
+}
