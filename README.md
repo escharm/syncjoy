@@ -64,8 +64,10 @@ syncjoy/
 
 | 想了解 | 去哪里 |
 |---|---|
+| 快速跑通一遍（Quick Start） | [docs/quickstart.md](docs/quickstart.md) |
 | 对等模型如何协作、连接策略 | [docs/architecture.md](docs/architecture.md) |
 | peer 的收发方式与 ICE 配置 | [docs/peer-sdk.md](docs/peer-sdk.md) |
 | 如何嵌入 relay（任意框架宿主） | [docs/relay-sdk.md](docs/relay-sdk.md) |
-| relay 包内部机制（信令时序、顶替护栏、TURN） | [crates/relay/README.md](crates/relay/README.md) |
+| 信令协议消息与格式 | [docs/protocol-schema.md](docs/protocol-schema.md) |
+| 已拍板的决策与被否决的方案 | [decisions/](decisions/) |
 | 接下来做什么 | [roadmap/](roadmap/) |

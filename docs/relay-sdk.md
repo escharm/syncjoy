@@ -11,7 +11,7 @@ use syncjoy_relay::{session, Relay};
 session::run(relay, inbound_rx, outbound_tx).await;
 ```
 
-契约只有两条：WebSocket 升级端点挂在 `/syncjoy/v1/peer`（peer SDK 的固定拨入路径）；文本帧按原样进出通道。探活等自有端点由宿主路由自理。会话语义为 hello/ack 握手、SDP/ICE 路由、TURN 下发；没有在线广播（见 [decisions/no-presence-broadcast.md](../decisions/no-presence-broadcast.md)）。
+契约只有两条：WebSocket 升级端点挂在 `/syncjoy/v1/peer`（peer SDK 的固定拨入路径）；文本帧按原样进出通道。探活等自有端点由宿主路由自理。会话语义为 hello/ack 握手、SDP/ICE 路由、TURN 下发；没有在线广播。
 
 完整参考实现在 `examples/relay-host`（axum + healthz + TURN 环境变量），其他框架（actix、warp、裸 hyper）同构：收 ws、开通道对、spawn `session::run`。
 
@@ -62,5 +62,6 @@ relay 不解读 SDP 与 ICE 内容，只按 peer id 转交；无鉴权，准入�
 
 - relay 应部署在有公网 IP 的主机上，进程只监听一个 TCP 端口，只承载低频信令流量；
 - TLS 交给反代（如 nginx、caddy）或宿主自行处理，peer 用 `wss://` 地址接入；
+- 入口限速同样交给反代：不设限速时，任何注册者都能以线速向任意在线 peer 直投信令帧，消耗 relay CPU、对端 CPU，并把对端写缓冲打满迫其断线。反代按字节与连接数限速即可（信令帧即字节流量），例如 nginx 的 `limit_conn` 加 `proxy_upload_rate`；
 - 需要穿透兜底时，同机或同内网部署 coturn，把 `turn:` 地址与 REST 密钥配给 `Relay::with_turn`；
 - relay 无业务状态、可水平扩展，但 v0 的注册表在进程内存里，多副本需要粘性会话或共享注册表（未实现，见 roadmap）。

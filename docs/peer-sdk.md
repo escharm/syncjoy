@@ -41,7 +41,7 @@ while let Some(event) = relay_link.next_event().await {
 - 对端死亡由数据面自身判定，与对端的信令连接无关：优雅退出走 SCTP 关闭立即触发 `on_close`，硬死亡由 ICE consent（RFC 7675）在约 30 秒内判死，同样触发 `on_close`；
 - 信令断开时发出 `RelayClosed { reason }`（死因：socket 关闭、坏帧、发送失败），同时所有在途拨号立即以 `Rejected("relay link closed: …")` 失败；既有 DataChannel 不受影响继续直连；SDK 不自动重连，是否重连由使用方按原因决定（对齐低层 WebSocket 的边界），重连需重新 `connect_relay`；
 - 信令用完可主动关闭：`relay_link.close()` 断开与 relay 的连接，既有直连全部保留、继续收发，在途拨号立即失败，新拨号立即返回 `Closed`；主动关闭不发 `RelayClosed`（使用方知情），重新入网需要新的 `connect_relay`（新的链接上下文，与存量直连互不感知）；
-- 事件只投递给 `next_event` 的消费者，不消费则积压（无界），见 [issues/unbounded-queues.md](../issues/unbounded-queues.md)。
+- 事件只投递给 `next_event` 的消费者，不消费则积压（无界），消费节奏归宿主，见 [decisions/inbound-queue-stays-unbounded.md](../decisions/inbound-queue-stays-unbounded.md)。
 
 ## ICE 配置（STUN/TURN）
 
@@ -109,5 +109,5 @@ impl MsgHandler for Echo {
 ## 边界
 
 - `on_msg` 与 `recv` 互斥：`on_msg` 取走来向队列，此后 `recv` 立即返回 `None`；
-- 持有 `PeerLink` 而不消费时队列会积压（无界），见 [issues/unbounded-queues.md](../issues/unbounded-queues.md)；
+- 收包队列无界，消费节奏归宿主：与浏览器 WebRTC 的 `onmessage` 同语义，积压治理与灌包防御（应用层校验后 `close`）归宿主，见 [decisions/inbound-queue-stays-unbounded.md](../decisions/inbound-queue-stays-unbounded.md)；
 - 回调是逐条顺序执行，慢回调推迟同连接的后续消息；需要并发时在回调内自行 spawn。
