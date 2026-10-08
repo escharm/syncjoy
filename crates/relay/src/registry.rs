@@ -4,6 +4,8 @@ use std::sync::Mutex;
 use syncjoy_protocol::{PeerId, RelayToPeer};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
+use crate::lock;
+
 #[derive(Default)]
 pub struct PeerRegistry {
     inner: Mutex<Inner>,
@@ -32,7 +34,7 @@ impl PeerRegistry {
 
     pub fn register(&self, peer: &PeerId) -> RegisteredPeer {
         let (sender, inbox) = unbounded_channel();
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = lock(&self.inner);
         inner.generation += 1;
         let generation = inner.generation;
         inner
@@ -42,7 +44,7 @@ impl PeerRegistry {
     }
 
     pub fn unregister(&self, peer: &PeerId, generation: u64) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = lock(&self.inner);
         let is_current = inner
             .peers
             .get(peer)
@@ -54,7 +56,7 @@ impl PeerRegistry {
     }
 
     pub fn route(&self, to: &PeerId, msg: RelayToPeer) -> bool {
-        let inner = self.inner.lock().unwrap();
+        let inner = lock(&self.inner);
         match inner.peers.get(to) {
             Some(slot) => slot.sender.send(msg).is_ok(),
             None => false,

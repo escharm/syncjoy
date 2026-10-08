@@ -9,6 +9,8 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::{Command, ConnectOptions, Core, Event, IncomingHandler};
 
+use crate::lock;
+
 #[derive(Clone)]
 pub struct LinkHandle {
     pub(crate) core: Arc<Core>,
@@ -29,7 +31,7 @@ impl LinkHandle {
     }
 
     pub fn on_incoming(&self, handler: impl IncomingHandler) {
-        *self.core.incoming.lock().unwrap() = Some(Arc::new(handler));
+        *lock(&self.core.incoming) = Some(Arc::new(handler));
     }
 
     pub fn close_peer(&self, target: impl Into<PeerId>) {
@@ -89,7 +91,7 @@ impl RelayLink {
     }
 
     pub fn on_incoming(&self, handler: impl IncomingHandler) {
-        *self.core.incoming.lock().unwrap() = Some(Arc::new(handler));
+        *lock(&self.core.incoming) = Some(Arc::new(handler));
     }
 
     pub fn close_peer(&self, target: impl Into<PeerId>) {

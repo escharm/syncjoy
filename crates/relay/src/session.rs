@@ -5,7 +5,7 @@ use tokio::time::interval_at;
 use crate::heartbeat::{Heartbeat, Probe};
 use crate::registry::RegisteredPeer;
 use crate::relay::Relay;
-use crate::turn::generate_credentials;
+use crate::turn::{generate_credentials, TurnConfig};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -46,7 +46,8 @@ pub async fn run(
         unregister(&relay, &peer_id, generation);
         return;
     }
-    if let Some(turn) = &relay.turn {
+    let turn = issued_turn(&relay);
+    if let Some(turn) = turn {
         let credentials = generate_credentials(turn, &peer_id.0, TURN_TTL_SECS);
         if !send(&outbound, &credentials) {
             unregister(&relay, &peer_id, generation);
@@ -55,8 +56,7 @@ pub async fn run(
     }
     tracing::info!(%peer_id, "peer online");
 
-    let heartbeat = Heartbeat::new(relay.heartbeat.clone());
-    let turn = relay.turn.as_ref();
+    let mut heartbeat = Heartbeat::new(relay.heartbeat.clone());
     let mut turn_timer = turn.map(|_| {
         let refresh = turn_refresh(TURN_TTL_SECS);
         interval_at(tokio::time::Instant::now() + refresh, refresh)
@@ -82,7 +82,7 @@ pub async fn run(
                 }
                 None => break,
             },
-            probe = heartbeat.wait() => match probe {
+            _ = tokio::time::sleep_until(heartbeat.wake_at()) => match heartbeat.fired() {
                 Probe::Send => {
                     if !send(&outbound, &RelayToPeer::Ping) {
                         break;
@@ -130,6 +130,15 @@ async fn read_hello(
 
 fn turn_refresh(ttl_secs: u64) -> Duration {
     Duration::from_secs(ttl_secs / 2)
+}
+
+fn issued_turn(relay: &Relay) -> Option<&TurnConfig> {
+    let turn = relay.turn.as_ref()?;
+    if relay.guard.is_none() {
+        tracing::warn!("turn credentials withheld: relay runs without an admission guard");
+        return None;
+    }
+    Some(turn)
 }
 
 fn send(outbound: &UnboundedSender<String>, msg: &RelayToPeer) -> bool {

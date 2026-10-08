@@ -7,6 +7,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::{watch, Mutex};
 
 use crate::error::PeerError;
+use crate::lock;
 use crate::relay_link::{CloseHandler, Command, LinkHandle, MsgHandler};
 use crate::transport::{self, DataChannel};
 
@@ -124,7 +125,7 @@ impl PeerLink {
     /// handle dropping. One handler slot per link: re-registering replaces,
     /// the callback fires at most once.
     pub fn on_close(&self, handler: impl CloseHandler) {
-        *self.inner.close_slot.lock().unwrap() = Some(Arc::new(handler));
+        *lock(&self.inner.close_slot) = Some(Arc::new(handler));
         if self.inner.close_watched.swap(true, Ordering::Relaxed) {
             return;
         }
@@ -138,7 +139,7 @@ impl PeerLink {
                     break;
                 }
             }
-            let handler = slot.lock().unwrap().clone();
+            let handler = lock(&slot).clone();
             if let Some(handler) = handler {
                 handler.on_close(link, peer).await;
             }

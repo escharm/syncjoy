@@ -3,6 +3,7 @@ use std::sync::Arc;
 use syncjoy_protocol::PeerId;
 use tokio::sync::mpsc::unbounded_channel;
 
+use crate::lock;
 use crate::peer_link::{PeerLink, PeerLinkInner};
 use crate::relay_link::{dispatch, ChannelEntry, Core, Event, LinkHandle};
 use crate::transport::DataChannel;
@@ -22,7 +23,7 @@ pub(crate) fn settle_dial(
     result: Result<PeerLink, String>,
 ) {
     let senders = {
-        let mut dials = core.dials.lock().unwrap();
+        let mut dials = lock(&core.dials);
         let matches = dials
             .get(to)
             .is_some_and(|waiter| waiter.generation == generation);
@@ -80,7 +81,7 @@ pub(crate) fn wire_data_channel(
 ) -> Option<Arc<PeerLinkInner>> {
     let (inbound_tx, inbound_rx) = unbounded_channel();
     let inner = {
-        let mut channels = core.channels.lock().unwrap();
+        let mut channels = lock(&core.channels);
         if channels.contains_key(peer) {
             return None;
         }
@@ -103,10 +104,7 @@ pub(crate) fn wire_data_channel(
                 link: Arc::downgrade(&inner),
             },
         );
-        core.pending
-            .lock()
-            .unwrap()
-            .insert(peer.clone(), Arc::clone(&inner));
+        lock(&core.pending).insert(peer.clone(), Arc::clone(&inner));
         inner
     };
 
@@ -144,7 +142,7 @@ fn fire_open(core: &Arc<Core>, peer: &PeerId, inner: Arc<PeerLinkInner>, action:
     {
         return;
     }
-    core.pending.lock().unwrap().remove(peer);
+    lock(&core.pending).remove(peer);
     let peer_link = PeerLink::new(inner.clone());
     match action {
         OpenAction::Dial => {

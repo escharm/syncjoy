@@ -1,7 +1,6 @@
-use std::sync::Mutex;
 use std::time::Duration;
 
-use tokio::time::{sleep_until, Instant};
+use tokio::time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct HeartbeatConfig {
@@ -25,57 +24,39 @@ pub(crate) enum Probe {
     Expired,
 }
 
-struct State {
+pub(crate) struct Heartbeat {
+    config: HeartbeatConfig,
     next_probe: Instant,
     probe_deadline: Option<Instant>,
 }
 
-pub(crate) struct Heartbeat {
-    config: HeartbeatConfig,
-    state: Mutex<State>,
-}
-
 impl Heartbeat {
     pub(crate) fn new(config: HeartbeatConfig) -> Self {
-        let next_probe = Instant::now() + config.interval;
         Self {
+            next_probe: Instant::now() + config.interval,
+            probe_deadline: None,
             config,
-            state: Mutex::new(State {
-                next_probe,
-                probe_deadline: None,
-            }),
         }
     }
 
-    pub(crate) async fn wait(&self) -> Probe {
-        loop {
-            let (wake_at, probing) = {
-                let state = self.state.lock().unwrap();
-                (
-                    state.probe_deadline.unwrap_or(state.next_probe),
-                    state.probe_deadline.is_some(),
-                )
-            };
-            sleep_until(wake_at).await;
-            let probing_now = self.state.lock().unwrap().probe_deadline.is_some();
-            if probing != probing_now {
-                continue;
-            }
-            if probing {
-                return Probe::Expired;
-            }
-            return Probe::Send;
+    pub(crate) fn wake_at(&self) -> Instant {
+        self.probe_deadline.unwrap_or(self.next_probe)
+    }
+
+    pub(crate) fn fired(&self) -> Probe {
+        if self.probe_deadline.is_some() {
+            Probe::Expired
+        } else {
+            Probe::Send
         }
     }
 
-    pub(crate) fn probe_sent(&self) {
-        let mut state = self.state.lock().unwrap();
-        state.probe_deadline = Some(Instant::now() + self.config.timeout);
+    pub(crate) fn probe_sent(&mut self) {
+        self.probe_deadline = Some(Instant::now() + self.config.timeout);
     }
 
-    pub(crate) fn pong(&self) {
-        let mut state = self.state.lock().unwrap();
-        state.probe_deadline = None;
-        state.next_probe = Instant::now() + self.config.interval;
+    pub(crate) fn pong(&mut self) {
+        self.probe_deadline = None;
+        self.next_probe = Instant::now() + self.config.interval;
     }
 }

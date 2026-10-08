@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::error::PeerError;
+use crate::lock;
 use crate::peer_link::{PeerLink, PeerLinkInner};
 use crate::transport::{DataChannel, PeerConnection};
 use async_trait::async_trait;
@@ -99,7 +100,7 @@ pub(crate) struct Core {
     pub(crate) dials: Mutex<HashMap<PeerId, DialWaiter>>,
     pub(crate) conns: Mutex<HashMap<PeerId, ConnEntry>>,
     pub(crate) channels: Mutex<HashMap<PeerId, ChannelEntry>>,
-    pub(crate) ice: Mutex<Vec<IceServer>>,
+    pub(crate) ice: Vec<IceServer>,
     pub(crate) relay_turn: Mutex<Option<IceServer>>,
     pub(crate) next_gen: AtomicU64,
 }
@@ -120,7 +121,7 @@ impl Core {
         }
         let (sender, opened) = oneshot::channel();
         {
-            let mut dials = self.dials.lock().unwrap();
+            let mut dials = lock(&self.dials);
             match dials.get_mut(&target) {
                 Some(waiter) => waiter.senders.push(sender),
                 None => {
@@ -158,7 +159,7 @@ impl Core {
     }
 
     pub(crate) async fn accept_incoming(&self, from: &PeerId) -> bool {
-        let handler = self.incoming.lock().unwrap().clone();
+        let handler = lock(&self.incoming).clone();
         match handler {
             None => true,
             Some(handler) => handler.incoming(from).await,
@@ -166,7 +167,7 @@ impl Core {
     }
 
     fn live_link(&self, target: &PeerId) -> Option<PeerLink> {
-        let channels = self.channels.lock().unwrap();
+        let channels = lock(&self.channels);
         let entry = channels.get(target)?;
         let inner = entry.link.upgrade()?;
         if !inner.dc.is_open() {
@@ -176,18 +177,15 @@ impl Core {
     }
 
     pub(crate) fn current_ice(&self) -> Vec<IceServer> {
-        let mut servers = self.ice.lock().unwrap().clone();
-        if let Some(turn) = self.relay_turn.lock().unwrap().clone() {
+        let mut servers = self.ice.clone();
+        if let Some(turn) = lock(&self.relay_turn).clone() {
             servers.push(turn);
         }
         servers
     }
 
     pub(crate) async fn send(&self, to: PeerId, bytes: Bytes) -> Result<(), PeerError> {
-        let dc = self
-            .channels
-            .lock()
-            .unwrap()
+        let dc = lock(&self.channels)
             .get(&to)
             .map(|entry| entry.dc.clone());
         match dc {
@@ -197,8 +195,8 @@ impl Core {
     }
 
     pub(crate) fn retire(&self, peer: &PeerId) {
-        self.pending.lock().unwrap().remove(peer);
-        let Some(entry) = self.channels.lock().unwrap().remove(peer) else {
+        lock(&self.pending).remove(peer);
+        let Some(entry) = lock(&self.channels).remove(peer) else {
             return;
         };
         if let Some(inner) = entry.link.upgrade() {
@@ -207,7 +205,7 @@ impl Core {
     }
 
     pub(crate) fn teardown_all(&self, peer: &PeerId) {
-        let pc = self.conns.lock().unwrap().remove(peer).map(|entry| entry.pc);
+        let pc = lock(&self.conns).remove(peer).map(|entry| entry.pc);
         self.retire(peer);
         if let Some(pc) = pc {
             pc.close();
@@ -216,7 +214,7 @@ impl Core {
 
     pub(crate) fn teardown_if(&self, peer: &PeerId, generation: u64) {
         let pc = {
-            let mut conns = self.conns.lock().unwrap();
+            let mut conns = lock(&self.conns);
             match conns.get(peer) {
                 Some(entry) if entry.generation == generation => {
                     conns.remove(peer).map(|entry| entry.pc)
@@ -225,14 +223,14 @@ impl Core {
             }
         };
         let retired = {
-            let mut channels = self.channels.lock().unwrap();
+            let mut channels = lock(&self.channels);
             match channels.get(peer) {
                 Some(entry) if entry.generation == generation => channels.remove(peer),
                 _ => None,
             }
         };
         if let Some(entry) = retired {
-            self.pending.lock().unwrap().remove(peer);
+            lock(&self.pending).remove(peer);
             if let Some(inner) = entry.link.upgrade() {
                 let _ = inner.closed.send(true);
             }
@@ -246,7 +244,7 @@ impl Core {
     /// same peer must survive the old channel's late close event.
     pub(crate) fn retire_channel(&self, peer: &PeerId, dc: &DataChannel) {
         let current = {
-            let channels = self.channels.lock().unwrap();
+            let channels = lock(&self.channels);
             channels.get(peer).map(|entry| (entry.generation, entry.dc.clone()))
         };
         match current {
@@ -256,7 +254,7 @@ impl Core {
                 }
                 self.retire(peer);
                 let pc = {
-                    let mut conns = self.conns.lock().unwrap();
+                    let mut conns = lock(&self.conns);
                     match conns.get(peer) {
                         Some(entry) if entry.generation == generation => {
                             conns.remove(peer).map(|entry| entry.pc)
@@ -274,14 +272,14 @@ impl Core {
 }
 
 pub(crate) fn dispatch(core: &Arc<Core>, from: &PeerId, bytes: Bytes) {
-    let channels = core.channels.lock().unwrap();
-    if let Some(entry) = channels.get(from) {
+        let channels = lock(&core.channels);
+        if let Some(entry) = channels.get(from) {
         let _ = entry.inbound.send(bytes);
     }
 }
 
 pub(crate) fn fail_dials_to(core: &Core, to: &PeerId, reason: String) {
-    let mut dials = core.dials.lock().unwrap();
+    let mut dials = lock(&core.dials);
     if let Some(waiter) = dials.remove(to) {
         for sender in waiter.senders {
             let _ = sender.send(Err(reason.clone()));
@@ -290,7 +288,7 @@ pub(crate) fn fail_dials_to(core: &Core, to: &PeerId, reason: String) {
 }
 
 pub(crate) fn fail_all_dials(core: &Core, reason: String) {
-    let mut dials = core.dials.lock().unwrap();
+    let mut dials = lock(&core.dials);
     for (_, waiter) in dials.drain() {
         for sender in waiter.senders {
             let _ = sender.send(Err(reason.clone()));

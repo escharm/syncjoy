@@ -17,3 +17,7 @@ pub use relay_link::{
     CloseHandler, ConnectOptions, Event, IncomingHandler, LinkHandle, MsgHandler, RelayLink,
 };
 pub use syncjoy_protocol::{IceServer, PeerId};
+
+pub(crate) fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}

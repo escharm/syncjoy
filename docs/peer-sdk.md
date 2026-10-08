@@ -55,8 +55,8 @@ let peer = Peer::builder()
     .ice_server(IceServer::turn("turn:turn.example.com:3478", "user", "secret"))
     .build();
 
-// ② relay 下发：relay 配置了 TURN 时在注册后自动签发限时凭证、到期前重签（见 relay-sdk.md），
-//    拨号时取最新一份并入
+// ② relay 下发：relay 配置了 TURN 且配了准入 guard 时在注册后自动签发限时凭证、到期前重签
+//    （见 relay-sdk.md），拨号时取最新一份并入
 
 // ③ 单次拨号追加：拨难达对端时临时补充，不持久化
 let peer_link = relay_link

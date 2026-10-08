@@ -9,3 +9,7 @@ pub use heartbeat::HeartbeatConfig;
 pub use registry::PeerRegistry;
 pub use relay::Relay;
 pub use turn::{generate_credentials, TurnConfig};
+
+pub(crate) fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}

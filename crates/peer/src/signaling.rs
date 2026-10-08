@@ -7,6 +7,7 @@ use syncjoy_protocol::{decode, encode, PeerToRelay, RelayToPeer};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 use crate::error::PeerError;
+use crate::lock;
 use crate::peer::Peer;
 use crate::relay_link::{
     fail_all_dials, fail_dials_to, Command, Core, Event, RelayLink, HOST_CLOSED, RELAY_LINK_CLOSED,
@@ -50,11 +51,11 @@ pub(crate) async fn connect_relay(peer: &Peer, relay_url: &str) -> Result<RelayL
         dials: Mutex::new(HashMap::new()),
         conns: Mutex::new(HashMap::new()),
         channels: Mutex::new(HashMap::new()),
-        ice: Mutex::new(if peer.ice_servers.is_empty() {
+        ice: if peer.ice_servers.is_empty() {
             vec![IceServer::stun(STUN_URL)]
         } else {
             peer.ice_servers.clone()
-        }),
+        },
         relay_turn: Mutex::new(None),
         next_gen: AtomicU64::new(1),
     });
@@ -157,7 +158,7 @@ async fn handle_signal(core: &Arc<Core>, msg: RelayToPeer) {
             username,
             credential,
         } => {
-            *core.relay_turn.lock().unwrap() = Some(IceServer {
+            *lock(&core.relay_turn) = Some(IceServer {
                 urls,
                 username,
                 credential,

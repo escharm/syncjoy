@@ -32,18 +32,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("SYNCJOY_TURN_URL"),
         std::env::var("SYNCJOY_TURN_SECRET"),
     ) {
-        (Ok(urls), Ok(secret)) => Relay::with_turn(TurnConfig {
-            urls: urls
-                .split(',')
-                .map(|url| url.trim().to_owned())
-                .filter(|url| !url.is_empty())
-                .collect(),
-            secret,
-        }),
+        (Ok(urls), Ok(secret)) => {
+            if std::env::var("SYNCJOY_PEER_TOKEN").is_err() {
+                eprintln!(
+                    "warning: TURN is configured but SYNCJOY_PEER_TOKEN is unset; \
+                     credentials are withheld until an admission guard is configured"
+                );
+            }
+            Relay::with_turn(TurnConfig {
+                urls: urls
+                    .split(',')
+                    .map(|url| url.trim().to_owned())
+                    .filter(|url| !url.is_empty())
+                    .collect(),
+                secret,
+            })
+        }
         _ => Relay::new(),
     };
     if let Ok(expected) = std::env::var("SYNCJOY_PEER_TOKEN") {
-        relay = relay.with_guard(move |_, token| token == Some(expected.as_str()));
+        relay = relay.with_guard(move |_, token| {
+            token.is_some_and(|token| constant_time_eq(token.as_bytes(), expected.as_bytes()))
+        });
         println!("registration guard on: hello token required");
     }
 
@@ -52,6 +62,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("relay listening on {}", listener.local_addr()?);
     axum::serve(listener, router(relay)).await?;
     Ok(())
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0, |diff, (a, b)| diff | a ^ b) == 0
 }
 
 fn router(relay: Relay) -> axum::Router {

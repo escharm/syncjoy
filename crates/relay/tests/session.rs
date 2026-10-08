@@ -193,7 +193,8 @@ async fn turn_credentials_follow_the_ack() {
     let relay = Relay::with_turn(TurnConfig {
         urls: vec!["turn:turn.example.com:3478".to_owned()],
         secret: "secret".to_owned(),
-    });
+    })
+    .with_guard(|_, _| true);
     let mut alice = spawn_session(&relay);
 
     alice.to_relay.send(hello("alice")).unwrap();
@@ -205,8 +206,37 @@ async fn turn_credentials_follow_the_ack() {
     .await;
     assert!(matches!(
         frame,
-        RelayToPeer::Turn { ref urls, .. } if urls == &vec!["turn:turn.example.com:3478".to_owned()]
+        RelayToPeer::Turn { ref urls, ref username, .. }
+            if urls == &vec!["turn:turn.example.com:3478".to_owned()]
+                && username.ends_with(":alice")
     ));
+}
+
+#[tokio::test]
+async fn turn_credentials_are_withheld_without_a_guard() {
+    let relay = Relay::with_turn(TurnConfig {
+        urls: vec!["turn:turn.example.com:3478".to_owned()],
+        secret: "secret".to_owned(),
+    })
+    .with_heartbeat(syncjoy_relay::HeartbeatConfig {
+        interval: Duration::from_millis(30),
+        timeout: Duration::from_millis(60),
+        hello_timeout: Duration::from_secs(5),
+    });
+    let mut alice = spawn_session(&relay);
+
+    alice.to_relay.send(hello("alice")).unwrap();
+    until(&mut alice.from_relay, |f| matches!(f, RelayToPeer::Ack)).await;
+    loop {
+        let frame = next_frame(&mut alice.from_relay).await;
+        assert!(
+            !matches!(frame, RelayToPeer::Turn { .. }),
+            "unguarded relay must not issue turn credentials"
+        );
+        if matches!(frame, RelayToPeer::Ping) {
+            break;
+        }
+    }
 }
 
 #[tokio::test]

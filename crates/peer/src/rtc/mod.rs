@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use syncjoy_protocol::{IceServer, PeerId, PeerToRelay};
 
+use crate::lock;
 use crate::relay_link::{Command, ConnEntry, Core, DIAL_TIMED_OUT};
 use crate::transport::{self, PeerConnection};
 use channel::{settle_dial, wire_data_channel, OpenAction};
@@ -16,7 +17,7 @@ const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) async fn dial(core: &Arc<Core>, to: &PeerId, extra_ice: Vec<IceServer>) {
     let generation = core.next_gen.fetch_add(1, Ordering::Relaxed);
     {
-        let mut dials = core.dials.lock().unwrap();
+        let mut dials = lock(&core.dials);
         match dials.get_mut(to) {
             Some(waiter) => waiter.generation = generation,
             None => return,
@@ -32,7 +33,7 @@ pub(crate) async fn dial(core: &Arc<Core>, to: &PeerId, extra_ice: Vec<IceServer
             return;
         }
     };
-    core.conns.lock().unwrap().insert(
+    lock(&core.conns).insert(
         to.clone(),
         ConnEntry {
             generation,
@@ -97,7 +98,7 @@ pub(crate) async fn answer(core: &Arc<Core>, from: &PeerId, sdp: &str) {
             return;
         }
     };
-    core.conns.lock().unwrap().insert(
+    lock(&core.conns).insert(
         from.clone(),
         ConnEntry {
             generation,
@@ -135,10 +136,7 @@ pub(crate) async fn answer(core: &Arc<Core>, from: &PeerId, sdp: &str) {
 }
 
 pub(crate) async fn complete(core: &Arc<Core>, from: &PeerId, sdp: &str) {
-    let pc = core
-        .conns
-        .lock()
-        .unwrap()
+    let pc = lock(&core.conns)
         .get(from)
         .map(|entry| entry.pc.clone());
     if let Some(pc) = pc {
@@ -151,10 +149,7 @@ pub(crate) async fn add_ice(
     from: &PeerId,
     candidate: &syncjoy_protocol::IceCandidate,
 ) {
-    let pc = core
-        .conns
-        .lock()
-        .unwrap()
+    let pc = lock(&core.conns)
         .get(from)
         .map(|entry| entry.pc.clone());
     if let Some(pc) = pc {
@@ -174,6 +169,6 @@ fn forward_ice(core: &Arc<Core>, pc: &PeerConnection, to: &PeerId) {
 }
 
 fn connection_alive(core: &Arc<Core>, peer: &PeerId) -> bool {
-    let channels = core.channels.lock().unwrap();
+    let channels = lock(&core.channels);
     channels.get(peer).is_some_and(|entry| entry.dc.is_open())
 }
