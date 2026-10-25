@@ -31,6 +31,8 @@ let relay = Relay::with_turn(TurnConfig {
 
 签发以准入为前提。REST 凭证只要签出来对 coturn 就是有效的，coturn 分不清持有者，无 guard 的 relay 面向公网等于向匿名连接发放 TURN 带宽，因此未配 guard 时凭证一律不签发（注册与信令路由不受影响，只少一层穿透兜底），每个会话记一条 warn 日志。准入在网络层完成的部署（内网、反代客户端证书），用恒真 guard 显式放行：`Relay::with_turn(...).with_guard(|_, _| true)`。见 [decisions/turn-credentials-require-guard.md](../decisions/turn-credentials-require-guard.md)。
 
+凭证生命周期可整体外包给宿主：`Relay::with_turn_provisioner(Arc<dyn TurnProvisioner>)` 注入签发与撤销（coturn userdb 账号、云厂商 NTS、任意自建后端），SDK 只掌握时机：准入后调用 `issue`（返回的 `refresh_after` 指示下次续签点，`None` 则一次签发到底），会话终结对最后一次成功签发调用 `revoke`（异步派发，不阻塞会话回收；同名顶替只撤被顶替的那次签发）。`issue` 返回 Err 时该会话降级为无 TURN 兜底，信令不受影响；无 guard 不签发的规则对 provisioner 同样生效。可撤销账号方案（转发出去的凭证可掐断）的契约见 [decisions/turn-provisioner-port.md](../decisions/turn-provisioner-port.md)。
+
 TURN 服务本身由部署层的 coturn 提供，SDK 不内嵌：把有状态的运维组件编译进宿主进程，UDP 端口与带宽管理反而复杂化。
 
 <a id="guard"></a>

@@ -1,15 +1,14 @@
-use syncjoy_protocol::{decode, encode, PeerToRelay, RelayToPeer};
+use syncjoy_protocol::{decode, encode, IceServer, PeerId, PeerToRelay, RelayToPeer};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::time::interval_at;
+use tokio::time::{sleep_until, Instant};
 
 use crate::heartbeat::{Heartbeat, Probe};
 use crate::registry::RegisteredPeer;
 use crate::relay::Relay;
-use crate::turn::{generate_credentials, TurnConfig};
+use crate::turn::GrantedTurn;
 use std::sync::Arc;
 use std::time::Duration;
 
-const TURN_TTL_SECS: u64 = 3600;
 const REGISTRATION_DENIED: &str = "registration denied";
 
 /// Drive one signaling connection over a frame pipe: inbound yields peer text
@@ -46,10 +45,10 @@ pub async fn run(
         unregister(&relay, &peer_id, generation);
         return;
     }
-    let turn = issued_turn(&relay);
-    if let Some(turn) = turn {
-        let credentials = generate_credentials(turn, &peer_id.0, TURN_TTL_SECS);
-        if !send(&outbound, &credentials) {
+    let mut granted = issue_turn(&relay, &peer_id).await;
+    if let Some(turn) = granted.as_ref().map(turn_frame) {
+        if !send(&outbound, &turn) {
+            revoke_turn(&relay, granted);
             unregister(&relay, &peer_id, generation);
             return;
         }
@@ -57,10 +56,9 @@ pub async fn run(
     tracing::info!(%peer_id, "peer online");
 
     let mut heartbeat = Heartbeat::new(relay.heartbeat.clone());
-    let mut turn_timer = turn.map(|_| {
-        let refresh = turn_refresh(TURN_TTL_SECS);
-        interval_at(tokio::time::Instant::now() + refresh, refresh)
-    });
+    let mut turn_refresh_at = granted
+        .as_ref()
+        .and_then(|turn| turn.refresh_after.map(|d| Instant::now() + d));
     loop {
         tokio::select! {
             text = inbound.recv() => match text {
@@ -94,20 +92,20 @@ pub async fn run(
                     break;
                 }
             },
-            _ = async {
-                match turn_timer.as_mut() {
-                    Some(timer) => timer.tick().await,
-                    None => std::future::pending().await,
+            _ = sleep_at(turn_refresh_at) => match issue_turn(&relay, &peer_id).await {
+                Some(turn) => {
+                    if !send(&outbound, &turn_frame(&turn)) {
+                        break;
+                    }
+                    turn_refresh_at = turn.refresh_after.map(|d| Instant::now() + d);
+                    granted = Some(turn);
                 }
-            } => {
-                let Some(turn) = turn else { continue };
-                if !send(&outbound, &generate_credentials(turn, &peer_id.0, TURN_TTL_SECS)) {
-                    break;
-                }
-            }
+                None => turn_refresh_at = None,
+            },
         }
     }
 
+    revoke_turn(&relay, granted);
     unregister(&relay, &peer_id, generation);
     tracing::info!(%peer_id, "peer offline");
 }
@@ -128,17 +126,48 @@ async fn read_hello(
         .filter(|msg| matches!(msg, PeerToRelay::Hello { .. }))
 }
 
-fn turn_refresh(ttl_secs: u64) -> Duration {
-    Duration::from_secs(ttl_secs / 2)
+async fn sleep_at(wake_at: Option<Instant>) {
+    match wake_at {
+        Some(at) => sleep_until(at).await,
+        None => std::future::pending().await,
+    }
 }
 
-fn issued_turn(relay: &Relay) -> Option<&TurnConfig> {
-    let turn = relay.turn.as_ref()?;
+fn turn_frame(granted: &GrantedTurn) -> RelayToPeer {
+    let IceServer {
+        urls,
+        username,
+        credential,
+    } = &granted.server;
+    RelayToPeer::Turn {
+        urls: urls.clone(),
+        username: username.clone(),
+        credential: credential.clone(),
+    }
+}
+
+async fn issue_turn(relay: &Relay, peer_id: &PeerId) -> Option<GrantedTurn> {
+    let provisioner = relay.turn.clone()?;
     if relay.guard.is_none() {
         tracing::warn!("turn credentials withheld: relay runs without an admission guard");
         return None;
     }
-    Some(turn)
+    match provisioner.issue(peer_id).await {
+        Ok(granted) => Some(granted),
+        Err(error) => {
+            tracing::warn!(%peer_id, %error, "turn provisioner declined issuance");
+            None
+        }
+    }
+}
+
+fn revoke_turn(relay: &Relay, granted: Option<GrantedTurn>) {
+    let (Some(provisioner), Some(granted)) = (relay.turn.clone(), granted) else {
+        return;
+    };
+    tokio::spawn(async move {
+        provisioner.revoke(&granted).await;
+    });
 }
 
 fn send(outbound: &UnboundedSender<String>, msg: &RelayToPeer) -> bool {

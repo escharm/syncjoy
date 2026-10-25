@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use crate::heartbeat::HeartbeatConfig;
 use crate::registry::PeerRegistry;
-use crate::turn::TurnConfig;
+use crate::turn::{RestSecret, TurnConfig, TurnProvisioner};
 use syncjoy_protocol::{PeerId, PeerToRelay, RelayToPeer};
 
 #[derive(Clone, Default)]
 pub struct Relay {
     pub(crate) registry: Arc<PeerRegistry>,
-    pub(crate) turn: Option<TurnConfig>,
+    pub(crate) turn: Option<Arc<dyn TurnProvisioner>>,
     pub(crate) heartbeat: HeartbeatConfig,
     pub(crate) guard: Option<Arc<dyn Fn(&PeerId, Option<&str>) -> bool + Send + Sync>>,
 }
@@ -21,10 +21,17 @@ impl Relay {
     pub fn with_turn(turn: TurnConfig) -> Self {
         Self {
             registry: Arc::new(PeerRegistry::new()),
-            turn: Some(turn),
+            turn: Some(Arc::new(RestSecret::new(turn))),
             heartbeat: HeartbeatConfig::default(),
             guard: None,
         }
+    }
+
+    /// Replace the built-in REST-secret issuance with a host-owned credential
+    /// lifecycle; admission rules are unchanged.
+    pub fn with_turn_provisioner(mut self, provisioner: Arc<dyn TurnProvisioner>) -> Self {
+        self.turn = Some(provisioner);
+        self
     }
 
     /// Registration gate consulted with the hello peer_id and its optional

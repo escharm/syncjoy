@@ -6,10 +6,11 @@ rust-version.workspace = true
 
 [dependencies]
 syncjoy-protocol = { workspace = true }
+async-trait = { workspace = true }
 base64 = { workspace = true }
 hmac = { workspace = true }
 sha1 = { workspace = true }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["rt", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
