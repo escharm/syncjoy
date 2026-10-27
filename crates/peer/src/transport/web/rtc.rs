@@ -125,8 +125,11 @@ impl PeerConnection {
         let handler: std::sync::Arc<dyn Fn(DataChannel) + Send + Sync> =
             std::sync::Arc::from(handler);
         let on_channel = Closure::wrap(Box::new(move |event: RtcDataChannelEvent| {
+            let channel = event.channel();
+            // 浏览器默认 binaryType="blob"，二进制消息事件取不到 ArrayBuffer
+            channel.set_binary_type(web_sys::RtcDataChannelType::Arraybuffer);
             handler(DataChannel {
-                inner: event.channel(),
+                inner: channel,
                 keepalive: Keepalive::default(),
             });
         }) as Box<dyn FnMut(RtcDataChannelEvent)>);
@@ -136,8 +139,10 @@ impl PeerConnection {
     }
 
     pub(crate) async fn create_data_channel(&self, label: &str) -> Result<DataChannel, String> {
+        let channel = self.inner.create_data_channel(label);
+        channel.set_binary_type(web_sys::RtcDataChannelType::Arraybuffer);
         Ok(DataChannel {
-            inner: self.inner.create_data_channel(label),
+            inner: channel,
             keepalive: Keepalive::default(),
         })
     }

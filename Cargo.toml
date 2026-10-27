@@ -40,7 +40,7 @@ tokio = { version = "1", default-features = false, features = ["macros", "sync"]
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 web-sys = { version = "0.3", features = [
   "WebSocket", "BinaryType", "RtcPeerConnection", "RtcConfiguration", "RtcDataChannel",
-  "RtcDataChannelState", "RtcDataChannelEvent", "RtcSessionDescription",
+  "RtcDataChannelState", "RtcDataChannelType", "RtcDataChannelEvent", "RtcSessionDescription",
   "RtcSessionDescriptionInit", "RtcSdpType", "RtcIceCandidate",
   "RtcIceCandidateInit", "RtcPeerConnectionIceEvent", "MessageEvent", "Event",
 ] }
